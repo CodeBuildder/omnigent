@@ -164,6 +164,50 @@ async def test_successful_poll_resets_failure_streak() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cold_start_empty_polls_do_not_escalate() -> None:
+    """Native cold-start discovery polls must not trip durable ``failed``.
+
+    A cold-starting native session commonly spends several polls discovering
+    the vendor session / waiting for the transcript file. Those iterations
+    succeed (no exception) and call :func:`note_poll_success`. Even a few
+    transient exceptions below the threshold must not POST ``failed`` — that
+    was the shape of prior spurious failed-card bugs during cold start.
+
+    :returns: None.
+    """
+    posts: list[dict[str, Any]] = []
+    tracker = PollFailureTracker()
+
+    async def _post_status(
+        _client: object,
+        *,
+        session_id: str,
+        status: str,
+        output: str | None = None,
+        **_kwargs: object,
+    ) -> None:
+        posts.append({"session_id": session_id, "status": status, "output": output})
+
+    # Simulate cold-start: a couple of transient misses, then a successful
+    # discovery poll, then more quiet successful polls — never escalate.
+    for i in range(2):
+        await handle_poll_failure(
+            client=_RecordingClient(),  # type: ignore[arg-type]
+            session_id="conv_cold",
+            tracker=tracker,
+            error=RuntimeError(f"not-ready-{i}"),
+            harness="claude-native",
+            post_status=_post_status,
+        )
+    note_poll_success(tracker)
+    for _ in range(POLL_FAILURE_THRESHOLD + 2):
+        note_poll_success(tracker)
+    assert posts == []
+    assert tracker.consecutive_failures == 0
+    assert tracker.failed_status_emitted is False
+
+
+@pytest.mark.asyncio
 async def test_supervisor_restarts_escalate_within_window() -> None:
     """M supervisor restarts inside the window POST durable ``failed``.
 

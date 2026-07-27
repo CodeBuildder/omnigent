@@ -603,6 +603,35 @@ async def test_notify_pane_dead_is_idempotent_with_idle_watcher_exit(
 
 
 @pytest.mark.asyncio
+async def test_notify_pane_dead_is_noop_before_terminal_observed(tmp_path: Path) -> None:
+    """Pane-death notify before observe cannot publish a spurious failed card.
+
+    Native cold start briefly has no observed lifecycle. ``notify_pane_dead``
+    must no-op until ``observe_required_terminal`` registers the pane — the
+    attach bridge also refuses to connect until ``is_alive()`` is true, so a
+    pre-pane cold start cannot trip part B.
+
+    :param tmp_path: Temporary directory for fake terminal paths.
+    :returns: None.
+    """
+    from omnigent.entities.session_resources import terminal_resource_id
+
+    terminal_registry = TerminalRegistry()
+    registry = SessionResourceRegistry(terminal_registry=terminal_registry)
+    instance = make_test_terminal_instance("claude", "main", tmp_path)
+    terminal_registry._by_conversation.setdefault("conv_cold", {})[("claude", "main")] = instance
+    exits: list[TerminalExitEvent] = []
+
+    def _publish_exit(event: TerminalExitEvent) -> None:
+        exits.append(event)
+
+    registry.set_terminal_exit_publisher(_publish_exit)
+    registry.notify_pane_dead("conv_cold", terminal_resource_id("claude", "main"))
+    await asyncio.sleep(0)
+    assert exits == []
+
+
+@pytest.mark.asyncio
 async def test_required_terminal_exit_without_observed_status_is_failure(tmp_path: Path) -> None:
     """A required terminal that never reported a PTY status fails on exit.
 
