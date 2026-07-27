@@ -1851,6 +1851,10 @@ def create_runner_app(
             session_ids = set(_session_start_cache) | set(_session_agent_ids)
             if any(process_manager.has_active_turn(session_id) for session_id in session_ids):
                 return True
+        # Native PTY turns clear `_active_turns` at proxy-stream end while the
+        # pane is still working; the pane reaper already treats this as busy.
+        if any(status == "running" for status in _native_pane_status.values()):
+            return True
         return False
 
     app.state.has_active_work = _has_active_work
@@ -1871,6 +1875,12 @@ def create_runner_app(
             _status_value = event.get("status")
             if isinstance(_status_value, str):
                 _native_pane_status[session_id] = _status_value
+                # Reset the runner idle timer on native status edges so a long
+                # PTY turn does not look "already timed out" the moment it
+                # settles to idle.
+                mark_activity = getattr(app.state, "mark_activity", None)
+                if callable(mark_activity):
+                    mark_activity()
         _fan_out_child_delta_to_parent(session_id, event)
 
     def _child_preview_from_status(
@@ -8133,6 +8143,11 @@ def create_runner_app(
             tmux_target=entry.instance.tmux_target,
             read_only=read_only,
             on_client_interaction=entry.instance.note_client_interaction,
+            on_pane_dead=(
+                (lambda: resource_registry.notify_pane_dead(session_id, terminal_id))
+                if resource_registry is not None
+                else None
+            ),
         )
 
     async def _require_os_env(session_id: str) -> Any | None:

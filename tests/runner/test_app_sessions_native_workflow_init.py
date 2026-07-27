@@ -1465,6 +1465,42 @@ async def test_has_active_work_reports_process_manager_turns() -> None:
 
 
 @pytest.mark.asyncio
+async def test_has_active_work_reports_native_pane_running() -> None:
+    """The runner idle watchdog sees a native PTY pane marked ``running``.
+
+    Native turns clear ``_active_turns`` at proxy-stream end while the pane is
+    still working. Without counting ``_native_pane_status == "running"``, the
+    inactivity monitor would shut the runner down mid-turn (premature idle /
+    orphaned native agent).
+
+    :returns: None.
+    """
+    app, _pm, _hc = _build_lifecycle_app()
+    session_id = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    async with _runner_client(app) as client:
+        resp = await client.post(
+            "/v1/sessions",
+            json={
+                "session_id": session_id,
+                "agent_id": "880b5afda28ad55ff74cbeb9b5fc67fb",
+            },
+        )
+
+    assert resp.status_code == 201
+    assert app.state.has_active_work() is False
+
+    registry = app.state.session_resource_registry
+    publisher = getattr(registry, "_session_status_publisher", None)
+    assert callable(publisher)
+
+    publisher(session_id, "running")
+    assert app.state.has_active_work() is True
+
+    publisher(session_id, "idle")
+    assert app.state.has_active_work() is False
+
+
+@pytest.mark.asyncio
 async def test_create_session_missing_fields() -> None:
     """``POST /v1/sessions`` with missing fields returns 400."""
     app, _pm, _hc = _build_lifecycle_app()
