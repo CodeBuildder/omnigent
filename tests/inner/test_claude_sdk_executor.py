@@ -2848,14 +2848,19 @@ def test_resolve_sandbox_cwd_roots_relative_at_runner_workspace(monkeypatch) -> 
     monkeypatch.setenv("OMNIGENT_RUNNER_WORKSPACE", "/home/bobby/code/agents")
     monkeypatch.chdir("/tmp")
 
-    assert str(_resolve_sandbox_cwd(".")) == "/home/bobby/code/agents"
-    assert str(_resolve_sandbox_cwd(None)) == "/home/bobby/code/agents"
-    assert str(_resolve_sandbox_cwd("src")) == "/home/bobby/code/agents/src"
-    assert str(_resolve_sandbox_cwd("/etc/foo")) == "/etc/foo"
+    # ``_resolve_sandbox_cwd`` ends in ``Path.resolve()``, and macOS routes
+    # these literal paths through firmlinks (``/home`` -> the automounter,
+    # ``/tmp`` -> ``/private/tmp``), so compare against the same resolution
+    # instead of literal strings. On Linux both sides are identical.
+    workspace = str(Path("/home/bobby/code/agents").resolve())
+    assert str(_resolve_sandbox_cwd(".")) == workspace
+    assert str(_resolve_sandbox_cwd(None)) == workspace
+    assert str(_resolve_sandbox_cwd("src")) == str(Path("/home/bobby/code/agents/src").resolve())
+    assert str(_resolve_sandbox_cwd("/etc/foo")) == str(Path("/etc/foo").resolve())
 
     # No workspace set → falls back to the process cwd (prior behavior).
     monkeypatch.delenv("OMNIGENT_RUNNER_WORKSPACE", raising=False)
-    assert str(_resolve_sandbox_cwd(".")) == "/tmp"
+    assert str(_resolve_sandbox_cwd(".")) == str(Path("/tmp").resolve())
 
 
 @pytest.mark.parametrize("env_value", ["1", "true", "yes"])
