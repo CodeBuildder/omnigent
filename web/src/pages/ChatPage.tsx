@@ -3455,6 +3455,8 @@ function AssistantBubble({
             items={bubble.items}
             sessionStatus={sessionStatus}
             canApprove={canApprove}
+            turnLifecycle={bubble.lifecycle}
+            workedForS={bubble.workedForS}
           />
         </MessageContent>
         {bubble.lifecycle === "cancelled" && (

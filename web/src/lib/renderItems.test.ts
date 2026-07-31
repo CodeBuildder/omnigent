@@ -26,6 +26,7 @@ function ctx(opts?: {
   agent?: string | null;
   timestamp?: number;
   createdBy?: string;
+  createdAtS?: number;
 }): BlockContext {
   return {
     agent: opts?.agent ?? "test",
@@ -35,6 +36,7 @@ function ctx(opts?: {
     responseId: opts?.responseId ?? "resp_1",
     itemId: opts?.itemId === undefined ? null : opts.itemId,
     ...(opts?.createdBy !== undefined ? { createdBy: opts.createdBy } : {}),
+    ...(opts?.createdAtS !== undefined ? { createdAtS: opts.createdAtS } : {}),
   };
 }
 
@@ -1586,5 +1588,51 @@ describe("buildBubbles — incremental reuse cache", () => {
 
     expect(bubbles).toHaveLength(1);
     expect((bubbles[0] as Extract<Bubble, { kind: "assistant" }>).lifecycle).toBe("cancelled");
+  });
+});
+
+describe("buildBubbles — workedForS turn duration", () => {
+  const textDone = (
+    itemId: string,
+    text: string,
+    stamps?: { timestamp?: number; createdAtS?: number },
+  ): AnyBlock => ({
+    type: "text_done",
+    ctx: ctx({ itemId, ...stamps }),
+    fullText: text,
+    hasCodeBlocks: false,
+  });
+  const assistantBubble = (blocks: AnyBlock[]) =>
+    buildBubbles(blocks, null)[0] as Extract<Bubble, { kind: "assistant" }>;
+
+  it("spans live block timestamps (page-relative clock)", () => {
+    const bubble = assistantBubble([
+      textDone("a1", "working…", { timestamp: 10.25 }),
+      textDone("a2", "done", { timestamp: 116.5 }),
+    ]);
+    expect(bubble.workedForS).toBeCloseTo(106.25);
+  });
+
+  it("spans server created_at stamps for reloaded history", () => {
+    const bubble = assistantBubble([
+      textDone("a1", "working…", { createdAtS: 1_753_900_000 }),
+      textDone("a2", "done", { createdAtS: 1_753_900_106 }),
+    ]);
+    expect(bubble.workedForS).toBe(106);
+  });
+
+  it("is undefined when stamps are missing or span different clocks", () => {
+    // No stamps at all (pre-plumb history).
+    expect(assistantBubble([textDone("a1", "a"), textDone("a2", "b")]).workedForS).toBeUndefined();
+    // Single-block turn: no span to measure.
+    expect(assistantBubble([textDone("a1", "a", { timestamp: 5 })]).workedForS).toBeUndefined();
+    // Mixed clocks (page loaded mid-turn): epoch first, page-relative
+    // last — never subtract across clocks.
+    expect(
+      assistantBubble([
+        textDone("a1", "a", { createdAtS: 1_753_900_000 }),
+        textDone("a2", "b", { timestamp: 42 }),
+      ]).workedForS,
+    ).toBeUndefined();
   });
 });

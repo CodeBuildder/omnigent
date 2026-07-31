@@ -2,27 +2,41 @@
 // `item.kind`. Compaction renders as a standalone `Bubble` in
 // `ChatPage`, not as an inline render item — no case for it here.
 //
-// Tool-call collapsing: within a contiguous run of tool / native_tool
-// items, tools fold into a single summary line describing what's
-// hidden ("Read 2 files", rendered by `ToolGroupSummary`). While the
-// run is the live activity — the session is running and the run is
-// the last thing in the transcript — the trailing `STREAMING_TAIL`
-// tools stay visible as individual rows so the user can watch recent
-// steps; once the agent emits anything after the run (or the session
-// goes idle), the whole run folds into the one expandable line, like
-// the terminal's collapsed past turns. Still-in-progress spinners and
-// durable routing/fan-out cards never fold regardless of position.
+// Two levels of collapsing keep a turn readable:
+//
+// 1. Tool-run folding: within a contiguous run of tool / native_tool
+//    items, tools fold into a single summary line describing what's
+//    hidden ("Read 2 files", rendered by `ToolGroupSummary`). While
+//    the run is the live activity, the trailing `STREAMING_TAIL`
+//    tools stay visible as individual rows so the user can watch
+//    recent steps. Still-in-progress spinners and durable
+//    routing/fan-out cards never fold regardless of position.
+//
+// 2. Turn folding: once the turn settles (`turnLifecycle` leaves
+//    "streaming"), the whole process trace — interstitial narration,
+//    tool folds, reasoning — collapses behind one muted "Worked for
+//    Xs" row (`TurnWorkedFold`), leaving only the trailing final
+//    answer visible. This mirrors the Codex desktop treatment: the
+//    demarcation makes "where do I start reading" obvious instead of
+//    a wall of uniform prose. Resolved approval cards fold with the
+//    trace in document order; pending elicitations and persistent
+//    routing/dispatch cards stay visible outside the fold; a turn
+//    with no trailing answer (interrupted / failed / tool-only step
+//    bubbles) keeps its trace expanded.
 
 import type { ReactNode } from "react";
 import { useMemo } from "react";
 import type React from "react";
+import { ChevronRightIcon } from "lucide-react";
 import { defaultRemarkPlugins } from "streamdown";
 import remarkBreaks from "remark-breaks";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { ZoomableImage } from "@/components/ImageLightbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useThrottledValue } from "@/hooks/useThrottledValue";
 import type { RenderItem } from "@/lib/renderItems";
 import type { SessionStatus } from "@/lib/types";
+import type { ActiveResponse } from "@/store/types";
 import { cn } from "@/lib/utils";
 import {
   useFileViewer,
@@ -293,6 +307,15 @@ interface BlockRendererProps {
   items: RenderItem[];
   sessionStatus: SessionStatus;
   canApprove?: boolean;
+  /**
+   * Lifecycle of the turn this bubble renders (`Bubble.lifecycle`).
+   * `"streaming"` keeps the process trace expanded; any settled state
+   * folds it behind the "Worked for Xs" row. When omitted, liveness
+   * falls back to `sessionStatus` (running/waiting ⇒ live).
+   */
+  turnLifecycle?: ActiveResponse["state"];
+  /** Wall-clock seconds the turn worked (`Bubble.workedForS`). */
+  workedForS?: number;
 }
 
 type ToolRunFragment =
@@ -306,18 +329,60 @@ type ToolRunFragment =
       index: number;
     };
 
-export function BlockRenderer({ items, sessionStatus, canApprove = true }: BlockRendererProps) {
+export function BlockRenderer({
+  items,
+  sessionStatus,
+  canApprove = true,
+  turnLifecycle,
+  workedForS,
+}: BlockRendererProps) {
+  const isAgentActive = sessionStatus === "running" || sessionStatus === "waiting";
+  const isTurnLive = turnLifecycle !== undefined ? turnLifecycle === "streaming" : isAgentActive;
+
+  if (!isTurnLive) {
+    const { process, exempt, final, finalStart } = partitionTurn(items);
+    // Fold only a turn that both did work and produced an answer: the
+    // trace collapses behind the "Worked for" row, exempt cards stay
+    // visible after it, and the answer renders last at full style. A
+    // turn missing either half renders expanded — there is nothing to
+    // demarcate.
+    if (process.length > 0 && final.length > 0) {
+      return (
+        <>
+          <TurnWorkedFold workedForS={workedForS}>
+            {renderSequence(process, { liveEdge: false, canApprove })}
+          </TurnWorkedFold>
+          {exempt.map(({ item, index }) => renderItem(item, index, false, false, canApprove))}
+          {renderSequence(final, { liveEdge: false, canApprove, indexBase: finalStart })}
+        </>
+      );
+    }
+  }
+
+  return renderSequence(items, { liveEdge: isTurnLive, canApprove });
+}
+
+/**
+ * Render a flat item sequence with tool-run folding. `liveEdge` marks
+ * the sequence as the live activity: the trailing tool run keeps its
+ * visible `STREAMING_TAIL` and a trailing reasoning item shows the
+ * streaming shimmer. `indexBase` offsets positional fallback keys so a
+ * partitioned slice keys consistently with its position in the turn.
+ */
+function renderSequence(
+  items: RenderItem[],
+  { liveEdge, canApprove, indexBase = 0 }: TurnSequenceOptions,
+): ReactNode[] {
   const rendered: ReactNode[] = [];
   let previousRenderedItemWasText = false;
-  const isAgentActive = sessionStatus === "running" || sessionStatus === "waiting";
-  const streamingRunStart = isAgentActive ? findStreamingRunStart(items) : -1;
-  // Reasoning is "currently streaming" iff the agent is live AND this
+  const streamingRunStart = liveEdge ? findStreamingRunStart(items) : -1;
+  // Reasoning is "currently streaming" iff the turn is live AND this
   // reasoning is the very last item in the bubble. Mirrors the
   // `streamingRunStart` rule for tool runs: the trailing live edge stays
   // expanded; once anything else lands after it, it collapses.
   const lastIdx = items.length - 1;
   const reasoningStreamingIdx =
-    isAgentActive && lastIdx >= 0 && items[lastIdx]!.kind === "reasoning" ? lastIdx : -1;
+    liveEdge && lastIdx >= 0 && items[lastIdx]!.kind === "reasoning" ? lastIdx : -1;
 
   for (let i = 0; i < items.length; i += 1) {
     const item = items[i]!;
@@ -344,14 +409,16 @@ export function BlockRenderer({ items, sessionStatus, canApprove = true }: Block
         // the terminal's step list; only the fold's expanded contents
         // are nested (inside `ToolGroupSummary`).
         rendered.push(
-          <div key={`tool-group-with-tail:${runStart}`} className="space-y-1">
+          <div key={`tool-group-with-tail:${indexBase + runStart}`} className="space-y-1">
             <ToolGroupSummary tools={group.tools} />
-            {tail.map((fragment, idx) => renderToolRunFragment(fragment, runStart, idx))}
+            {tail.map((fragment, idx) =>
+              renderToolRunFragment(fragment, indexBase + runStart, idx),
+            )}
           </div>,
         );
       } else {
         for (let idx = 0; idx < fragments.length; idx += 1) {
-          rendered.push(renderToolRunFragment(fragments[idx]!, runStart, idx));
+          rendered.push(renderToolRunFragment(fragments[idx]!, indexBase + runStart, idx));
         }
       }
       previousRenderedItemWasText = false;
@@ -359,11 +426,123 @@ export function BlockRenderer({ items, sessionStatus, canApprove = true }: Block
     }
 
     const followsText = item.kind === "text" && previousRenderedItemWasText;
-    rendered.push(renderItem(item, i, i === reasoningStreamingIdx, followsText, canApprove));
+    rendered.push(
+      renderItem(item, indexBase + i, i === reasoningStreamingIdx, followsText, canApprove),
+    );
     previousRenderedItemWasText = item.kind === "text";
   }
 
   return rendered;
+}
+
+interface TurnSequenceOptions {
+  liveEdge: boolean;
+  canApprove: boolean;
+  indexBase?: number;
+}
+
+interface TurnPartition {
+  process: RenderItem[];
+  exempt: { item: RenderItem; index: number }[];
+  final: RenderItem[];
+  finalStart: number;
+}
+
+// Bookkeeping tools some harnesses append AFTER the turn's final
+// message (codex-native mirrors the turn's file diff as a trailing
+// `turn_diff` call). They must not stop the answer detection — they
+// fold into the process trace instead.
+const TRAILING_WRAPUP_TOOLS = new Set(["turn_diff"]);
+
+function isTrailingWrapupTool(item: RenderItem): boolean {
+  return item.kind === "tool" && TRAILING_WRAPUP_TOOLS.has(item.execution.name);
+}
+
+/**
+ * Split a settled turn into the foldable process trace, the always-
+ * visible exempt items, and the trailing final answer.
+ *
+ * `final` is the trailing run of text items — the turn's answer —
+ * looking past any trailing bookkeeping tools (`turn_diff`), which
+ * fold as process. Everything before the answer is process too —
+ * including resolved approval cards, which are part of the work's
+ * history and fold in document order — except items the user must
+ * keep seeing without an extra click: still-PENDING elicitations
+ * (normally floated out of the bubble by ChatPage, exempted here
+ * defensively so an actionable card can never be hidden), persistent
+ * routing/dispatch cards, and (defensively) tools still in progress.
+ * Errors, retries and policy denials DO fold — when the turn still
+ * produced an answer they're recovered noise, and a turn that ended
+ * on one has no trailing text so it never folds in the first place.
+ */
+function partitionTurn(items: RenderItem[]): TurnPartition {
+  let end = items.length;
+  const wrapup: RenderItem[] = [];
+  while (end > 0 && isTrailingWrapupTool(items[end - 1]!)) {
+    wrapup.unshift(items[end - 1]!);
+    end -= 1;
+  }
+  let finalStart = end;
+  while (finalStart > 0 && items[finalStart - 1]!.kind === "text") finalStart -= 1;
+  const process: RenderItem[] = [];
+  const exempt: { item: RenderItem; index: number }[] = [];
+  for (let i = 0; i < finalStart; i += 1) {
+    const item = items[i]!;
+    if (isPendingElicitation(item) || isPersistentToolCard(item) || isInProgressTool(item)) {
+      exempt.push({ item, index: i });
+    } else {
+      process.push(item);
+    }
+  }
+  process.push(...wrapup);
+  return { process, exempt, final: items.slice(finalStart, end), finalStart };
+}
+
+function isPendingElicitation(item: RenderItem): boolean {
+  return item.kind === "elicitation" && item.status === "pending";
+}
+
+/**
+ * Codex-style demarcation for a completed turn: the whole process
+ * trace (narration, tool folds, reasoning) collapses behind one muted
+ * "Worked for Xs" row with a hairline rule, so the final answer below
+ * is unambiguously where reading starts. Expanding replays the trace
+ * inline.
+ */
+function TurnWorkedFold({ workedForS, children }: { workedForS?: number; children: ReactNode }) {
+  const label = workedForS !== undefined ? `Worked for ${formatWorkedFor(workedForS)}` : "Worked";
+  return (
+    // Named `group/turn-fold` so only this collapsible's own chevron
+    // rotates (inner tool cards carry unnamed `.group` rotations that a
+    // bare `group` class here would incorrectly trigger).
+    <Collapsible
+      key="turn-worked-fold"
+      defaultOpen={false}
+      className="group/turn-fold not-prose w-full"
+      data-testid="turn-worked-fold"
+    >
+      <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1 py-0.5 text-left text-muted-foreground text-xs transition-colors hover:text-foreground">
+        <span className="shrink-0">{label}</span>
+        <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-[state=open]/turn-fold:rotate-90" />
+        <span aria-hidden className="ml-1 flex-1 border-border border-t" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=open]:animate-in">
+        <div className="flex flex-col gap-2 border-border border-b py-2">{children}</div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+/** "8s", "1m 46s", "1h 2m" — matches the native CLIs' worked-for stamps. */
+function formatWorkedFor(seconds: number): string {
+  const s = Math.max(1, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  if (m < 60) return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return mm > 0 ? `${h}h ${mm}m` : `${h}h`;
 }
 
 /**

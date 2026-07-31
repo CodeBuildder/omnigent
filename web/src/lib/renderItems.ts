@@ -141,6 +141,13 @@ export type Bubble =
       /** Free-form error message when `lifecycle === "failed"`. */
       error: string | null;
       items: RenderItem[];
+      /**
+       * Wall-clock seconds the turn spent working, when derivable —
+       * labels the completed turn's "Worked for Xs" process fold.
+       * Live-streamed turns span the blocks' page-relative timestamps;
+       * reloaded history spans the items' server `created_at` stamps.
+       */
+      workedForS?: number;
     }
   | { kind: "compaction_loading"; itemId: string }
   | { kind: "compaction"; itemId: string }
@@ -509,6 +516,7 @@ function walkBubbles(
     const stableId = firstItemId ?? `${groupResponseId}:${subIndex}`;
 
     lastBubbleStart = groupStart;
+    const workedForS = turnWorkedForS(groupBlocks);
     bubbles.push({
       kind: "assistant",
       responseId: groupResponseId,
@@ -516,10 +524,34 @@ function walkBubbles(
       lifecycle,
       error,
       items: buildAssistantItems(groupBlocks, lifecycle, crossBubbleResults),
+      ...(workedForS !== undefined ? { workedForS } : {}),
     });
   }
 
   return { bubbles, lastBubbleStart };
+}
+
+/**
+ * Wall-clock seconds between a turn's first and last block, when both
+ * ends carry a usable stamp from the SAME clock. Live-streamed blocks
+ * carry page-relative `ctx.timestamp` (sub-second precision); reloaded
+ * history carries server `ctx.createdAtS` (epoch seconds). A bubble
+ * that mixes the two clocks (page loaded mid-turn) yields `undefined`
+ * rather than a cross-clock span.
+ */
+function turnWorkedForS(groupBlocks: AnyBlock[]): number | undefined {
+  const first = groupBlocks[0];
+  const last = groupBlocks[groupBlocks.length - 1];
+  if (first === undefined || last === undefined || first === last) return undefined;
+  if (first.ctx.timestamp > 0 && last.ctx.timestamp >= first.ctx.timestamp) {
+    return last.ctx.timestamp - first.ctx.timestamp;
+  }
+  const firstCreated = first.ctx.createdAtS;
+  const lastCreated = last.ctx.createdAtS;
+  if (firstCreated !== undefined && lastCreated !== undefined && lastCreated >= firstCreated) {
+    return lastCreated - firstCreated;
+  }
+  return undefined;
 }
 
 /** Filter to blocks that participate in assistant rendering. */
