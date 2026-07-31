@@ -1466,7 +1466,10 @@ def register_core_routes(
             user_id, session_id, required_level, permission_store, conversation_store
         )
         if body.archived is True:
-            await _best_effort_stop(session_id, conversation_store, runner_router)
+            # Detached, not awaited: the flag flip must not wait out the
+            # stop's per-runner timeouts. The stop still runs to completion
+            # as a retained background task.
+            _spawn_best_effort_stop(session_id, conversation_store, runner_router)
         if body.runner_id is not None and permission_store is not None:
             if not check_session_access(
                 user_id, session_id, LEVEL_OWNER, permission_store, conversation_store

@@ -12,6 +12,7 @@ pipeline without subprocesses.
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import io
 import tarfile
@@ -106,6 +107,19 @@ async def test_unarchive_restores_session_to_default_listing(
 # ── Best-effort stop before archive ───────────────────────
 
 
+async def _drain_detached_stops() -> None:
+    """
+    Wait out the archive PATCH's detached best-effort stop.
+
+    The handler spawns the stop as a retained background task and responds
+    immediately, so assertions about the stop must let it finish first.
+    """
+    await asyncio.gather(
+        *list(sessions_module._detached_stop_tasks),
+        return_exceptions=True,
+    )
+
+
 async def test_archive_running_session_attempts_stop(
     client: httpx.AsyncClient,
 ) -> None:
@@ -121,9 +135,56 @@ async def test_archive_running_session_attempts_stop(
                 f"/v1/sessions/{session_id}",
                 json={"archived": True},
             )
+            await _drain_detached_stops()
         assert resp.status_code == 200
         assert resp.json()["archived"] is True
         mock_stop.assert_awaited_once()
+    finally:
+        sessions_module._session_status_cache.pop(session_id, None)
+
+
+async def test_archive_does_not_block_on_slow_stop(
+    client: httpx.AsyncClient,
+) -> None:
+    """
+    The PATCH responds while the best-effort stop is still in flight.
+
+    The stop carries per-runner timeouts of several seconds against a
+    wedged or asleep runner; awaiting it inline made every archive of a
+    running session eat those timeouts before the flag flipped. The
+    handler detaches the stop instead — the response must not wait for
+    it, and the stop must still run.
+    """
+    session = await create_test_session(client, name="archive-slow-stop")
+    session_id = session["id"]
+
+    release = asyncio.Event()
+    stopped: list[str] = []
+
+    async def _parked_stop(sid: str, *_args: object) -> None:
+        stopped.append(sid)
+        await release.wait()
+
+    sessions_module._session_status_cache[session_id] = "running"
+    try:
+        with patch.object(sessions_module, "_best_effort_stop", _parked_stop):
+            # Would exhaust the timeout here if the handler awaited the
+            # stop inline (the fake stop parks until released below).
+            resp = await asyncio.wait_for(
+                client.patch(f"/v1/sessions/{session_id}", json={"archived": True}),
+                timeout=5.0,
+            )
+            assert resp.status_code == 200
+            assert resp.json()["archived"] is True
+            # The detached task starts on a subsequent loop pass and parks
+            # on the release gate — the stop still runs.
+            for _ in range(100):
+                if stopped:
+                    break
+                await asyncio.sleep(0)
+            assert stopped == [session_id]
+            release.set()
+            await _drain_detached_stops()
     finally:
         sessions_module._session_status_cache.pop(session_id, None)
 
@@ -160,6 +221,7 @@ async def test_archive_idle_parent_stops_running_child(
                 f"/v1/sessions/{session_id}",
                 json={"archived": True},
             )
+            await _drain_detached_stops()
         assert resp.status_code == 200
         assert resp.json()["archived"] is True
         # The child must be the one stopped, not the (idle) parent.
@@ -185,6 +247,7 @@ async def test_archive_proceeds_when_stop_fails(
                 f"/v1/sessions/{session_id}",
                 json={"archived": True},
             )
+            await _drain_detached_stops()
         assert resp.status_code == 200
         assert resp.json()["archived"] is True
     finally:
@@ -220,6 +283,7 @@ async def test_archive_proceeds_when_child_lookup_fails(
                     f"/v1/sessions/{session_id}",
                     json={"archived": True},
                 )
+                await _drain_detached_stops()
         assert resp.status_code == 200
         assert resp.json()["archived"] is True
     finally:
@@ -239,6 +303,7 @@ async def test_archive_idle_session(
             f"/v1/sessions/{session_id}",
             json={"archived": True},
         )
+        await _drain_detached_stops()
     assert resp.status_code == 200
     assert resp.json()["archived"] is True
     mock_stop.assert_not_awaited()

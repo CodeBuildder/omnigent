@@ -451,6 +451,41 @@ async def _best_effort_stop(
             await _stop(descendant_id)
 
 
+# Strong references to detached best-effort stops so the tasks can't be
+# garbage-collected mid-stop (asyncio only holds weak refs to tasks).
+_detached_stop_tasks: set[asyncio.Task[None]] = set()
+
+
+def _spawn_best_effort_stop(
+    session_id: str,
+    conversation_store: ConversationStore,
+    runner_router: Any,
+) -> None:
+    """
+    Run :func:`_best_effort_stop` as a retained background task.
+
+    Archiving needs the stop to *happen*, not to have happened before the
+    response is written: awaiting it inline held the PATCH for the stop's
+    per-runner timeouts (seconds per running session against a wedged or
+    asleep runner) even though the archive proceeds regardless of the
+    stop's outcome.
+
+    :param session_id: Session/conversation identifier.
+    :param conversation_store: Store for descendant-id lookup.
+    :param runner_router: The ``RunnerRouter`` for runner-client
+        resolution, or ``None`` in tests / in-process setups.
+    """
+    # Resolve through the facade so a test's monkeypatch of the stop is
+    # honored here.
+    from omnigent.server.routes import sessions as _facade
+
+    task = asyncio.create_task(
+        _facade._best_effort_stop(session_id, conversation_store, runner_router)
+    )
+    _detached_stop_tasks.add(task)
+    task.add_done_callback(_detached_stop_tasks.discard)
+
+
 def _labels_for_viewer(labels: dict[str, str], user_id: str | None) -> dict[str, str]:
     """
     Collapse per-user pin keys to the canonical pin label for one viewer.
@@ -6701,6 +6736,7 @@ __all__ = [
     "_child_session_summaries_from_conversations",
     "_create_session_from_bundle",
     "_create_session_from_existing_agent",
+    "_detached_stop_tasks",
     "_dispatch_session_event_to_runner",
     "_drive_terminal_resolved_elicitation",
     "_enrich_idle_status_with_subagent_output",
@@ -6746,6 +6782,7 @@ __all__ = [
     "_run_managed_launch",
     "_run_managed_wake",
     "_schedule_deferred_elicitation_clear",
+    "_spawn_best_effort_stop",
     "_spawn_native_approval_popup_forward",
     "_spawn_native_blocked_notice_forward",
     "_wait_for_host_bound_runner_client",
