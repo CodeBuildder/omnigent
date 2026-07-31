@@ -49,6 +49,7 @@ import {
   consumePendingInitialPrompt,
   handleSessionEvent,
   initChatStore,
+  pumpParsedEvents,
   pumpStreamEvents,
   setPendingInitialPrompt,
   startStreamPump,
@@ -6759,6 +6760,62 @@ describe("chatStore — pumpStreamEvents end reasons", () => {
     controller.abort();
     sink.push(sse("response.output_text.delta", { delta: `${"z".repeat(34)} ` }));
     expect(await done).toBe("aborted");
+  });
+});
+
+describe("chatStore — pumpParsedEvents (WebSocket transport core)", () => {
+  const setState = useChatStore.setState as unknown as Parameters<typeof pumpParsedEvents>[3];
+  const getState = useChatStore.getState as unknown as Parameters<typeof pumpParsedEvents>[4];
+  const immediate: FrameScheduler = { schedule: (cb) => cb(), cancel: () => {} };
+
+  /** An async iterable over a fixed list, mimicking the WS event transport. */
+  async function* iterableOf(events: StreamEvent[]): AsyncIterable<StreamEvent> {
+    for (const ev of events) yield ev;
+  }
+
+  it("reduces an event iterable into blocks (transport-agnostic)", async () => {
+    useChatStore.setState({ conversationId: "conv_ws_core", blocks: [] });
+    const events: StreamEvent[] = [
+      { type: "response_created", response: { id: "r1", status: "in_progress", output: [] } },
+      { type: "text_delta", delta: `${"y".repeat(34)} ` },
+    ] as unknown as StreamEvent[];
+    const reason = await pumpParsedEvents(
+      "conv_ws_core",
+      iterableOf(events),
+      new AbortController(),
+      setState,
+      getState,
+      () => true, // clean close
+      immediate,
+    );
+    expect(reason).toBe("server_closed");
+    expect(useChatStore.getState().blocks.length).toBeGreaterThan(0);
+  });
+
+  it("maps a clean close to 'server_closed' and a drop to 'dropped'", async () => {
+    useChatStore.setState({ conversationId: "conv_ws_close", blocks: [] });
+    const clean = await pumpParsedEvents(
+      "conv_ws_close",
+      iterableOf([]),
+      new AbortController(),
+      setState,
+      getState,
+      () => true,
+      immediate,
+    );
+    expect(clean).toBe("server_closed");
+
+    useChatStore.setState({ conversationId: "conv_ws_drop", blocks: [] });
+    const dropped = await pumpParsedEvents(
+      "conv_ws_drop",
+      iterableOf([]),
+      new AbortController(),
+      setState,
+      getState,
+      () => false, // socket closed without a normal (1000) code
+      immediate,
+    );
+    expect(dropped).toBe("dropped");
   });
 });
 
