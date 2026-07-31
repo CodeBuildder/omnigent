@@ -147,7 +147,7 @@ export function getOmnigentUserSearch(): OmnigentHostConfig["searchUsers"] {
  * Consumers use the absence to stay inert (emit nothing).
  */
 export function getOmnigentAnalytics(): OmnigentHostConfig["analytics"] {
-  return _config.analytics;
+  return hostConfig.analytics;
 }
 
 /**
