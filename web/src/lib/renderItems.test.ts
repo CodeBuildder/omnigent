@@ -1634,5 +1634,14 @@ describe("buildBubbles — workedForS turn duration", () => {
         textDone("a2", "b", { timestamp: 42 }),
       ]).workedForS,
     ).toBeUndefined();
+    // …and the reverse direction: a turn that began live but whose
+    // tail was hydrated (page-relative first, epoch last). The first
+    // block's clock picks the branch, so this must also bail.
+    expect(
+      assistantBubble([
+        textDone("a1", "a", { timestamp: 42 }),
+        textDone("a2", "b", { createdAtS: 1_753_900_000 }),
+      ]).workedForS,
+    ).toBeUndefined();
   });
 });

@@ -537,7 +537,10 @@ function walkBubbles(
  * carry page-relative `ctx.timestamp` (sub-second precision); reloaded
  * history carries server `ctx.createdAtS` (epoch seconds). A bubble
  * that mixes the two clocks (page loaded mid-turn) yields `undefined`
- * rather than a cross-clock span.
+ * rather than a cross-clock span — the FIRST block's clock decides
+ * which branch is tried: a live-stamped first block only ever pairs
+ * with a live-stamped last, an epoch-stamped first only with an
+ * epoch-stamped last, and either mixed direction fails both guards.
  */
 function turnWorkedForS(groupBlocks: AnyBlock[]): number | undefined {
   const first = groupBlocks[0];
