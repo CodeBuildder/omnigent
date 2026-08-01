@@ -1,15 +1,15 @@
-// Tests for the archive flow in the sidebar. Contract: archiving fires the
-// best-effort runner stop and the archive PATCH in parallel — the stop is
-// resource hygiene (NOT the user-facing Stop action, which is the kebab's
-// own "Stop session" item covered by Sidebar.stop.test.tsx) and never gates
-// the flag flip, so a wedged or asleep runner can't slow archiving. The
-// archive fires with `archived: true` and an onSettled that clears the
-// "Archiving…" status row. Unarchiving flips the flag back with no stop and
-// no status row. See ConversationRow.runArchive in Sidebar.tsx.
+// Tests for the archive flow in the sidebar. Contract: archiving sends ONLY
+// the archive PATCH (`archived: true`, with an onSettled that clears the
+// "Archiving…" status row). The runner stop is the server's job once the
+// flag commits — a client stop would race the server's against the same
+// runner, and it would also put the runner's stop timeouts in front of the
+// flag flip. The kebab's user-facing "Stop session" action is a separate
+// affordance covered by Sidebar.stop.test.tsx. Unarchiving flips the flag
+// back with no status row. See ConversationRow.runArchive in Sidebar.tsx.
 //
 // Archived sessions are no longer listed in the sidebar (they moved to the
 // Settings page), so unarchiving is covered by SettingsPage.test.tsx; this
-// file exercises the archive (stop→archive) path from a row's kebab.
+// file exercises the archive path from a row's kebab.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
@@ -133,15 +133,11 @@ afterEach(() => {
 });
 
 describe("archive flow", () => {
-  it("fires the best-effort stop and the archive in parallel", () => {
+  it("archives with a single PATCH and no client-side stop", () => {
     mockConversations([CONV]);
     renderSidebar();
     clickArchive();
 
-    // Both legs fire on click — the archive no longer waits for the stop
-    // to settle, so a slow stop can't delay the flag flip.
-    expect(mocks.stop.mutate).toHaveBeenCalledTimes(1);
-    expect(mocks.stop.mutate).toHaveBeenCalledWith("conv_1");
     expect(mocks.archive.mutate).toHaveBeenCalledTimes(1);
     expect(mocks.archive.mutate).toHaveBeenCalledWith(
       { id: "conv_1", archived: true },
@@ -150,6 +146,9 @@ describe("archive flow", () => {
         onSettled: expect.any(Function),
       }),
     );
+    // The server owns the stop. A client stop here would race it against
+    // the same runner and put its timeouts in front of the flag flip.
+    expect(mocks.stop.mutate).not.toHaveBeenCalled();
   });
 
   it("toasts a pointer to Settings once the archive succeeds", () => {
@@ -157,8 +156,7 @@ describe("archive flow", () => {
     renderSidebar();
     clickArchive();
 
-    // Drive the archive (fired on click, in parallel with the stop) to
-    // its success callback.
+    // Drive the archive to its success callback.
     const archiveArgs = mocks.archive.mutate.mock.calls[0];
     act(() => (archiveArgs[1] as { onSuccess: () => void }).onSuccess());
 

@@ -2728,14 +2728,9 @@ function ConversationRow({
   const del = useStopAndDeleteConversation();
   const archive = useArchiveConversation();
   const moveToProject = useMoveToProject();
-  // Archive also stops the runner (resource hygiene): a hidden session
-  // shouldn't keep a runner alive. This is NOT the user-facing Stop action
-  // (the kebab's "Stop session" item below, backed by its own mutation) —
-  // it's an internal step of archiving. Unarchive + a message relaunches
-  // on the live host under the non-sticky-stop model.
-  const stopForArchive = useStopSession();
-  // The kebab's user-facing "Stop session" action — separate mutation
-  // instance so its pending/error state can't bleed into archiving's.
+  // The kebab's user-facing "Stop session" action. Archiving does NOT go
+  // through here — the server stops the session itself once the archived
+  // flag commits, so a hidden session never keeps a runner alive.
   const stopSession = useStopSession();
   const isArchived = conversation.archived === true;
   const [isEditing, setIsEditing] = useState(false);
@@ -2933,7 +2928,7 @@ function ConversationRow({
     );
   }
 
-  // Archiving fires stop + archive in parallel (see runArchive); show a
+  // Archiving is a single PATCH (see runArchive); show a
   // status row for the span instead of leaving the row looking idle. On
   // success
   // the list refetches and the row drops out of the default view (or
@@ -2977,15 +2972,13 @@ function ConversationRow({
       archive.mutate({ id: conversation.id, archived: false });
       return;
     }
-    // Archiving fires the best-effort stop and the archive in parallel: the
-    // stop (resource hygiene — a hidden session shouldn't leave a runner
-    // orphaned) never gated the flag flip, and serializing it first added
-    // the runner's stop timeouts to every archive of a live session. The
-    // server also detaches its own stop when the flag flips. "Archiving…"
-    // shows until the archive settles (success → row leaves the default
-    // list; failure → interactive row returns for a retry).
+    // Archiving sends only the PATCH: the server stops the session (and
+    // tears down a host-spawned runner) in the background once the flag is
+    // committed. Sending a client stop too would race that one against the
+    // same runner, and the loser gets a 503 from the already-killed pane.
+    // "Archiving…" shows until the archive settles (success → row leaves
+    // the default list; failure → interactive row returns for a retry).
     setIsArchiving(true);
-    stopForArchive.mutate(conversation.id);
     archive.mutate(
       { id: conversation.id, archived: true },
       {
@@ -3513,7 +3506,7 @@ function DeletingRow({
 
 /**
  * In-flight status row shown while a session is being archived (the
- * parallel stop + archive in ConversationRow.runArchive). Mirrors the
+ * archive PATCH in ConversationRow.runArchive). Mirrors the
  * non-error arm of {@link DeletingRow}; archive failures fall back to
  * the interactive row rather than a persistent error state, so there's
  * no retry/dismiss affordance here.

@@ -232,6 +232,87 @@ async def test_archive_idle_parent_stops_running_child(
         sessions_module._session_status_cache.pop(child.id, None)
 
 
+async def test_archive_tears_down_host_spawned_runner(
+    client: httpx.AsyncClient,
+    db_uri: str,
+) -> None:
+    """
+    Archiving a host-spawned session tears down its dedicated runner.
+
+    Killing the pane alone leaves the host-launched runner connected, so
+    ``/health`` keeps reporting ``runner_online: true`` and a later
+    message hangs on "working" against a dead pane. Archive is the one
+    lifecycle action with no client-side stop, so the server carries the
+    teardown itself rather than racing a second stop against the same
+    runner.
+    """
+    session = await create_test_session(client, name="archive-host-spawned")
+    session_id = session["id"]
+
+    conv_store = SqlAlchemyConversationStore(db_uri)
+    conv_store.set_host_id(
+        session_id, "a1b2c3d4e5f61234567890abcdef0123", workspace="/tmp/archive-ws"
+    )
+    conv_store.set_runner_id(session_id, "b1b2c3d4e5f61234567890abcdef0123")
+
+    mock_teardown = AsyncMock(return_value=True)
+    sessions_module._session_status_cache[session_id] = "running"
+    try:
+        with (
+            patch.object(
+                sessions_module, "_stop_session_via_runner", AsyncMock(return_value=True)
+            ),
+            patch.object(sessions_module, "_stop_session_host_runner", mock_teardown),
+        ):
+            resp = await client.patch(
+                f"/v1/sessions/{session_id}",
+                json={"archived": True},
+            )
+            await _drain_detached_stops()
+        assert resp.status_code == 200
+        assert resp.json()["archived"] is True
+        mock_teardown.assert_awaited_once()
+        assert mock_teardown.await_args is not None
+        assert mock_teardown.await_args.args[:3] == (
+            session_id,
+            "a1b2c3d4e5f61234567890abcdef0123",
+            "b1b2c3d4e5f61234567890abcdef0123",
+        )
+    finally:
+        sessions_module._session_status_cache.pop(session_id, None)
+        sessions_module._intentional_stop_sessions.discard(session_id)
+
+
+async def test_failed_archive_leaves_session_running(
+    client: httpx.AsyncClient,
+) -> None:
+    """
+    A rejected archive PATCH must not stop the session.
+
+    The stop is spawned only after the archived flag commits, so a
+    request that fails a later validation (here a server-derived
+    per-user pin key) leaves the session both unarchived and untouched.
+    """
+    session = await create_test_session(client, name="archive-rejected")
+    session_id = session["id"]
+
+    mock_stop = AsyncMock(return_value=True)
+    sessions_module._session_status_cache[session_id] = "running"
+    try:
+        with patch.object(sessions_module, "_stop_session_via_runner", mock_stop):
+            resp = await client.patch(
+                f"/v1/sessions/{session_id}",
+                json={"archived": True, "labels": {"omnigent.pinned.someone": "1"}},
+            )
+            await _drain_detached_stops()
+        assert resp.status_code >= 400
+        mock_stop.assert_not_awaited()
+        listed = await client.get(f"/v1/sessions/{session_id}")
+        assert listed.json()["archived"] is False
+    finally:
+        sessions_module._session_status_cache.pop(session_id, None)
+
+
 async def test_archive_proceeds_when_stop_fails(
     client: httpx.AsyncClient,
 ) -> None:
