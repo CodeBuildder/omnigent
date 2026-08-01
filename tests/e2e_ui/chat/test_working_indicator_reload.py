@@ -230,3 +230,109 @@ def test_live_tool_output_updates_running_card(
         expect(page.get_by_text("collecting tests...", exact=True)).to_be_visible(timeout=10_000)
     finally:
         _publish_status(base_url, session_id, "idle", response_id=response_id)
+
+
+def _seed_item(
+    base_url: str,
+    session_id: str,
+    *,
+    item_type: str,
+    item_data: dict,
+    response_id: str,
+) -> None:
+    """Mirror one native conversation item onto the session.
+
+    Generic sibling of :func:`_seed_function_call` for message /
+    ``function_call_output`` items.
+
+    :param base_url: Base URL of the local e2e server.
+    :param session_id: Session/conversation id.
+    :param item_type: Item type, e.g. ``"message"``.
+    :param item_data: The item payload, e.g. an assistant message body.
+    :param response_id: Turn id the item belongs to.
+    :returns: None.
+    """
+    resp = httpx.post(
+        f"{base_url}/v1/sessions/{session_id}/events",
+        json={
+            "type": "external_conversation_item",
+            "data": {"item_type": item_type, "item_data": item_data, "response_id": response_id},
+        },
+        timeout=10.0,
+    )
+    resp.raise_for_status()
+
+
+def test_bare_idle_finalizes_turn_and_folds(
+    page: Page,
+    seeded_session: tuple[str, str],
+) -> None:
+    """An id-less idle edge settles the turn and folds it — no reload needed.
+
+    Most turn-end publishes carry no ``response_id`` (the PTY-activity
+    relay's bare ``idle``, orchestration teardown). The client used to
+    finalize the streaming lifecycle only on an id-matched edge, so a
+    native turn ending on a bare idle stayed "streaming" forever: the
+    "Working…" indicator cleared but the settled turn's "Worked for"
+    process fold (and Fork action) never appeared until a reload
+    re-derived lifecycle from the snapshot. This drives the exact event
+    sequence live and asserts the fold forms in place.
+    """
+    base_url, session_id = seeded_session
+    response_id = "resp_bare_idle_1"
+    _publish_status(base_url, session_id, "running", response_id=response_id)
+    _seed_item(
+        base_url,
+        session_id,
+        item_type="message",
+        item_data={
+            "role": "assistant",
+            "agent": "claude-native-ui",
+            "content": [{"type": "output_text", "text": "Let me look around first."}],
+        },
+        response_id=response_id,
+    )
+    _seed_function_call(
+        base_url,
+        session_id,
+        response_id=response_id,
+        call_id="call_bare_1",
+        name="shell",
+        arguments='{"command": "ls"}',
+    )
+    _seed_item(
+        base_url,
+        session_id,
+        item_type="function_call_output",
+        item_data={"call_id": "call_bare_1", "output": "README.md\n"},
+        response_id=response_id,
+    )
+    _seed_item(
+        base_url,
+        session_id,
+        item_type="message",
+        item_data={
+            "role": "assistant",
+            "agent": "claude-native-ui",
+            "content": [{"type": "output_text", "text": "All done - the repo looks healthy."}],
+        },
+        response_id=response_id,
+    )
+
+    page.goto(f"{base_url}/c/{session_id}")
+    # Scope to THIS turn's bubble — the fixture's pre-seeded history may
+    # carry its own (legitimately settled and folded) turns.
+    bubble = page.locator(
+        '[data-testid="message-bubble"][data-role="assistant"]',
+        has=page.get_by_text("All done - the repo looks healthy."),
+    ).first
+    expect(bubble).to_be_visible(timeout=20_000)
+    # Turn is live (running + streaming lifecycle) — the trace must be
+    # expanded, no fold yet.
+    expect(bubble.locator('[data-testid="turn-worked-fold"]')).to_have_count(0)
+
+    # The bare terminal edge: no response_id, like the PTY-activity relay.
+    _publish_status(base_url, session_id, "idle")
+
+    # The fold must appear IN PLACE — no reload between publish and assert.
+    expect(bubble.locator('[data-testid="turn-worked-fold"]').first).to_be_visible(timeout=15_000)

@@ -2491,6 +2491,24 @@ async function bindStream(
         // The voided page's stale early-return skips its own flag clear.
         loadingMoreHistory: false,
         sessionStatus: session.status,
+        // Mid-turn first open: the snapshot carries the in-flight turn's
+        // `activeResponseId`, and the turn-start `running` edge that would
+        // have opened the streaming lifecycle is long gone from the SSE
+        // stream. Open it here — mirroring `reconnectStatusPatch` — so the
+        // live turn's bubble renders streaming (trace expanded, tool
+        // spinners live) instead of prematurely settled and folded.
+        ...(session.status === "running" &&
+        session.activeResponseId != null &&
+        state.activeResponse?.responseId !== session.activeResponseId
+          ? {
+              status: "streaming" as const,
+              activeResponse: {
+                responseId: session.activeResponseId,
+                state: "streaming" as const,
+                error: null,
+              },
+            }
+          : {}),
         // Re-show "N background tasks still running" after a reload/navigate-back: the
         // live SSE edge that set this is long gone, so the count rides in on
         // the snapshot (server keeps it sticky past the trailing PTY `idle`).
@@ -3401,16 +3419,46 @@ async function* tapLiveDeltas(
   for await (const ev of events) {
     if (ev.type === "text_delta" && ev.messageId !== undefined) {
       if (get().conversationId === id && !retired.has(ev.messageId)) {
+        reviveStrayCompletedResponse(set);
         applyLiveDelta(set, ev.messageId, ev.index ?? 0, ev.delta, lastIndex);
       }
       continue;
     }
     if (ev.type === "tool_output_delta") {
-      if (get().conversationId === id) applyLiveToolOutputDelta(set, ev.callId, ev.delta);
+      if (get().conversationId === id) {
+        reviveStrayCompletedResponse(set);
+        applyLiveToolOutputDelta(set, ev.callId, ev.delta);
+      }
       continue;
+    }
+    if (
+      (ev.type === "text_delta" || ev.type === "reasoning_delta") &&
+      get().conversationId === id
+    ) {
+      reviveStrayCompletedResponse(set);
     }
     yield ev;
   }
+}
+
+/**
+ * Reopen a turn that a stray terminal status edge finalized too early.
+ *
+ * Deltas only ever flow mid-turn (a reconnect replay is a replay OF a
+ * mid-turn state), so a delta arriving while `activeResponse` reads
+ * `completed` proves the turn is still live — the finalize came from a
+ * response-id-less edge that wasn't about this turn (e.g. the server's
+ * policy-deny short-circuit publishing running→idle for a denied
+ * out-of-band input). Flip it back to `streaming` so the bubble's
+ * process trace stays expanded; the turn's own real terminal edge
+ * re-finalizes it. `failed` / `cancelled` are user-visible verdicts and
+ * are never revived.
+ */
+export function reviveStrayCompletedResponse(set: Setter): void {
+  set((s) => {
+    if (s.activeResponse?.state !== "completed") return {};
+    return { activeResponse: { ...s.activeResponse, state: "streaming" } };
+  });
 }
 
 /**
@@ -4237,17 +4285,26 @@ export function handleSessionEvent(event: StreamEvent): void {
                 error: null,
               };
             }
-          } else if (s.activeResponse === null) {
-            patch.status = "idle";
-          } else if (event.status === "waiting") {
-            // Turn ended (background work remains) but the `waiting` edge's id
-            // doesn't match the tracked response — free the send lifecycle
-            // anyway so a new message isn't stranded behind background work,
-            // and finalize a still-streaming bubble so it doesn't linger with a
-            // spinner that no edge will ever close.
+          } else {
+            // Terminal edge without a matching response id. This is the
+            // NORMAL turn-end shape for most emitters — the PTY-activity
+            // relay's bare `idle`, orchestration teardown, and mismatched
+            // Stop-hook `waiting` all carry none — so a still-streaming
+            // turn is finalized here rather than left "streaming" forever
+            // (which hid the settled turn's "Worked for" fold and Fork
+            // action until a reload re-derived lifecycle from the
+            // snapshot). The one edge this can misread — the server's
+            // policy-deny short-circuit publishing a stray running→idle
+            // pair while a real turn streams — is healed by
+            // `reviveStrayCompletedResponse`: the live turn's next delta
+            // reopens it. A `cancelled` turn is preserved as-is.
             patch.status = "idle";
             if (s.activeResponse?.state === "streaming") {
-              patch.activeResponse = { ...s.activeResponse, state: "completed", error: null };
+              patch.activeResponse = {
+                ...s.activeResponse,
+                state: event.status === "failed" ? "failed" : "completed",
+                error: null,
+              };
             }
           }
           // Clear ALL pending user messages on terminal status. Any
