@@ -579,7 +579,12 @@ class AcpExecutor(Executor):
         if self._session_id is not None:
             return self._session_id
 
-        params: _AcpJsonObject = {"cwd": self._cwd}
+        params: _AcpJsonObject = {
+            "cwd": self._cwd,
+            # ACP requires this field even when no per-session MCP servers are
+            # configured. Keep it empty when Omnigent MCP is disabled.
+            "mcpServers": [],
+        }
         if self._config.omnigent_mcp:
             params["mcpServers"] = self._mcp.session_new_servers(
                 tools=self._omnigent_tools,

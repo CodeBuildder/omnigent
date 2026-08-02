@@ -83,7 +83,7 @@ async def test_session_new_server_mode_adopts_returned_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_session_new_omits_mcp_servers_when_omnigent_mcp_disabled() -> None:
+async def test_session_new_sends_empty_mcp_servers_when_omnigent_mcp_disabled() -> None:
     ex = AcpExecutor(AcpAgentConfig(command="x", omnigent_mcp=False))
     captured: dict = {}
 
@@ -93,7 +93,7 @@ async def test_session_new_omits_mcp_servers_when_omnigent_mcp_disabled() -> Non
 
     ex._rpc = fake_rpc  # type: ignore[assignment]
     await ex._ensure_session()
-    assert "mcpServers" not in captured["params"]
+    assert captured["params"]["mcpServers"] == []
 
 
 @pytest.mark.asyncio
@@ -531,7 +531,7 @@ async def test_acp_session_new_carries_mcp_servers() -> None:
 
 @pytest.mark.asyncio
 async def test_acp_session_new_omnigent_mcp_disabled_per_agent() -> None:
-    """`omnigent_mcp=False` on the agent config → no mcpServers in session/new."""
+    """`omnigent_mcp=False` disables relay setup but preserves ACP's field."""
     ex = AcpExecutor(AcpAgentConfig(command="x", omnigent_mcp=False))
     ex._tool_executor = lambda n, a: None  # type: ignore[assignment]
     ex._omnigent_tools = [{"name": "sys_agent_list"}]
@@ -543,7 +543,7 @@ async def test_acp_session_new_omnigent_mcp_disabled_per_agent() -> None:
 
     ex._rpc = fake_rpc  # type: ignore[assignment]
     await ex._ensure_session()
-    assert "mcpServers" not in captured["params"]
+    assert captured["params"]["mcpServers"] == []
 
 
 @pytest.mark.asyncio

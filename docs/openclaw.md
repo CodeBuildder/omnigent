@@ -49,16 +49,16 @@ server over stdio. Register that command in `~/.omnigent/config.yaml`:
 acp:
   agents:
     - name: OpenClaw
-      command: openclaw acp --url <gateway-url> --token <token>
+      command: openclaw acp --url <gateway-url> --token-file <token-file>
       omnigent_mcp: false
 ```
 
 > [!CAUTION]
-> The Gateway token is stored as part of the launch command in
-> `~/.omnigent/config.yaml`. Do not commit or share that file, and use a token
+> Prefer `--token-file` so the Gateway token is not stored in the launch
+> command. Do not commit or share `~/.omnigent/config.yaml`, and use a token
 > with the narrowest permissions OpenClaw supports.
 
-Replace `<gateway-url>` and `<token>` with the connection details for your
+Replace `<gateway-url>` and `<token-file>` with the connection details for your
 running Gateway, then launch it with:
 
 ```bash
@@ -82,13 +82,30 @@ servers, so the OpenClaw entry must set `omnigent_mcp: false`. OpenClaw keeps
 using its own tools; the setting only disables Omnigent's additional MCP relay
 for this agent.
 
+### Session and tool boundaries
+
+Omni owns the outer conversation and transcript; OpenClaw owns the
+Gateway-backed ACP session. OpenClaw's Control UI is a separate Gateway client,
+not a second view that Omni continuously mirrors. Messages entered in the
+Control UI while Omni is offline are therefore not imported into the Omni
+conversation. Use Omni as the canonical conversation when you need its
+transcript and resume behavior.
+
+With `omnigent_mcp: false`, OpenClaw still has its own native tools (for
+example, shell and filesystem tools), but it does not receive Omnigent's
+additional MCP relay. Enabling the setting is currently incompatible with
+OpenClaw's Gateway ACP bridge because that bridge rejects per-session MCP
+servers.
+
 ### Compatibility status
 
 The protocol-level path matches for initialization, session creation, prompts,
-cancellation, streaming updates, and permission requests. A full turn against a
-live OpenClaw Gateway still needs validation on an unmanaged machine to confirm
-that final assistant text streams back cleanly. OpenClaw cannot be installed or
-run in the project's managed development and CI environments.
+cancellation, and streaming updates. Manual validation against a live Gateway
+has also confirmed the configured worktree, native shell/filesystem tools, and
+Omni conversation resume. Bidirectional synchronization with the OpenClaw
+Control UI and per-session Omnigent MCP are not supported by this integration.
+OpenClaw cannot be installed or run in the project's managed development and CI
+environments.
 
 If session creation reports that `mcpServers` is unsupported, confirm that the
 entry contains `omnigent_mcp: false` and restart the Omnigent session. If the

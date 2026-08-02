@@ -24,8 +24,8 @@ Env vars read at startup:
   configured to accept one in ``session/new``).
 - ``HARNESS_ACP_SESSION_ID_MODE``: ``server`` (default) or ``client``.
 - ``HARNESS_ACP_SEND_MODEL``: ``"1"`` to send the model in ``session/new``.
-- ``HARNESS_ACP_OMNIGENT_MCP``: ``"0"`` to omit Omnigent's MCP relay from
-  ``session/new``.
+- ``HARNESS_ACP_OMNIGENT_MCP``: ``"0"`` to disable Omnigent's MCP relay;
+  ``session/new`` still receives an empty ``mcpServers`` array.
 - ``HARNESS_ACP_OS_ENV``: JSON-encoded :class:`OSEnvSpec`. When unset, falls
   back to ``caller_process`` + ``sandbox=none``.
 - ``HARNESS_ACP_PROMPT_TIMEOUT_S``: optional idle (time-without-progress) deadline in
