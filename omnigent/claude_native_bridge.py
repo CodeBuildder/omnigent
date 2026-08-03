@@ -49,7 +49,7 @@ from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib import error, request
 
 from omnigent._platform import stable_user_id
@@ -893,7 +893,7 @@ def build_claude_native_spawn_env(
     }
 
 
-def _bridge_sandbox_payload(sandbox: OSEnvSandboxSpec) -> dict[str, object]:
+def _bridge_sandbox_payload(sandbox: OSEnvSandboxSpec) -> dict[str, Any]:
     """
     Build the JSON-safe sandbox payload persisted into the bridge config.
 
