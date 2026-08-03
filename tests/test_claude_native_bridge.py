@@ -355,6 +355,7 @@ def test_prepare_bridge_dir_refuses_symlinked_ancestor(
 
 def test_prepare_bridge_dir_persists_and_applies_resolved_sandbox(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     A resolved sandbox reaches both the bridge config and its sys_os_* tools.
@@ -368,9 +369,16 @@ def test_prepare_bridge_dir_persists_and_applies_resolved_sandbox(
     A server operator configuring ``force_sandbox`` for claude-native
     sessions got silent unenforced host access. This locks in the fix:
     the resolved sandbox must survive the config round-trip and actually
-    govern the tools that reach the agent.
+    reach the ``OSEnvSpec`` that builds the ``sys_os_*`` tools.
+
+    ``create_os_environment`` is patched at the boundary (same pattern as
+    ``test_executor_factory_decodes_os_env_json`` in
+    ``tests/inner/test_codex_harness.py``) rather than resolving a real
+    backend, so this is a platform-independent test of the config plumbing
+    — ``linux_bwrap`` and ``darwin_seatbelt`` only resolve on their own OS
+    and would otherwise fail this test on CI's Linux runners.
     """
-    resolved_sandbox = OSEnvSandboxSpec(type="darwin_seatbelt", allow_network=False)
+    resolved_sandbox = OSEnvSandboxSpec(type="linux_bwrap", allow_network=False)
 
     bridge_dir = prepare_bridge_dir(
         "conv_sandboxed",
@@ -378,18 +386,24 @@ def test_prepare_bridge_dir_persists_and_applies_resolved_sandbox(
         sandbox=resolved_sandbox,
     )
     config = json.loads((bridge_dir / "bridge.json").read_text(encoding="utf-8"))
-    assert config["sandbox"]["type"] == "darwin_seatbelt"
+    assert config["sandbox"]["type"] == "linux_bwrap"
     assert config["sandbox"]["allow_network"] is False
 
-    tools, close_tools = _build_tools(config)
-    try:
-        os_env = tools["sys_os_shell"]._os_env
-        assert os_env is not None
-        assert os_env.sandbox.backend_type == "darwin_seatbelt"
-        assert os_env.sandbox.active is True
-        assert os_env.sandbox.allow_network is False
-    finally:
-        close_tools()
+    captured: dict[str, Any] = {}
+
+    def _fake_create_os_environment(spec: Any) -> None:
+        captured["spec"] = spec
+        return
+
+    monkeypatch.setattr(
+        "omnigent.claude_native_bridge.create_os_environment",
+        _fake_create_os_environment,
+    )
+    _build_tools(config)
+
+    sandbox = captured["spec"].sandbox
+    assert sandbox.type == "linux_bwrap"
+    assert sandbox.allow_network is False
 
 
 def test_prepare_bridge_dir_without_sandbox_builds_unsandboxed_tools(
@@ -419,6 +433,7 @@ def test_prepare_bridge_dir_without_sandbox_builds_unsandboxed_tools(
 
 def test_prepare_bridge_dir_drops_credential_proxy_instead_of_corrupting_it(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     A sandbox with a real ``credential_proxy`` never corrupts the round-trip.
@@ -433,9 +448,14 @@ def test_prepare_bridge_dir_drops_credential_proxy_instead_of_corrupting_it(
     ``SandboxPolicy.to_jsonable``'s identical exclusion) — this locks in
     that it is dropped, not corrupted: the bridge config never carries it,
     and the rebuilt spec cleanly has it unset rather than a stray dict.
+
+    ``create_os_environment`` is patched at the boundary (see
+    ``test_prepare_bridge_dir_persists_and_applies_resolved_sandbox`` above)
+    so this is platform-independent — the sandbox type only needs to be
+    *something* non-``"none"``, not a backend real for the CI host's OS.
     """
     sandbox = OSEnvSandboxSpec(
-        type="darwin_seatbelt",
+        type="linux_bwrap",
         credential_proxy=CredentialProxySpec(
             entries=[
                 CredentialProxyEntry(
@@ -454,17 +474,23 @@ def test_prepare_bridge_dir_drops_credential_proxy_instead_of_corrupting_it(
     )
     config = json.loads((bridge_dir / "bridge.json").read_text(encoding="utf-8"))
     assert "credential_proxy" not in config["sandbox"]
-    assert config["sandbox"]["type"] == "darwin_seatbelt"
+    assert config["sandbox"]["type"] == "linux_bwrap"
 
-    tools, close_tools = _build_tools(config)
-    try:
-        os_env = tools["sys_os_shell"]._os_env
-        assert os_env is not None
-        assert os_env.sandbox.backend_type == "darwin_seatbelt"
-        assert os_env.sandbox.active is True
-        assert os_env.sandbox.credential_proxy is None
-    finally:
-        close_tools()
+    captured: dict[str, Any] = {}
+
+    def _fake_create_os_environment(spec: Any) -> None:
+        captured["spec"] = spec
+        return
+
+    monkeypatch.setattr(
+        "omnigent.claude_native_bridge.create_os_environment",
+        _fake_create_os_environment,
+    )
+    _build_tools(config)
+
+    sandbox_rebuilt = captured["spec"].sandbox
+    assert sandbox_rebuilt.type == "linux_bwrap"
+    assert sandbox_rebuilt.credential_proxy is None
 
 
 def test_ensure_secure_dir_succeeds_without_getuid(
