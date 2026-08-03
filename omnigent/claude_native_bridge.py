@@ -893,6 +893,31 @@ def build_claude_native_spawn_env(
     }
 
 
+def _bridge_sandbox_payload(sandbox: OSEnvSandboxSpec) -> dict[str, object]:
+    """
+    Build the JSON-safe sandbox payload persisted into the bridge config.
+
+    ``dataclasses.asdict`` flattens ``credential_proxy`` (a nested
+    ``CredentialProxySpec``) to a plain dict with no way to tell it apart
+    from a real one on read, so a naive ``OSEnvSandboxSpec(**payload)``
+    round-trip silently stores a ``dict`` where a ``CredentialProxySpec``
+    is expected — a real crash the first time sandboxed code dereferences
+    ``.entries`` / ``.databricks`` on it. ``credential_proxy`` is resolved
+    parent-side only and is never meant to cross a serialization boundary
+    in the first place — :func:`omnigent.inner.sandbox.SandboxPolicy.to_jsonable`
+    excludes it for the same reason (it can carry a credential *source*,
+    e.g. an env var name or a shell command, that has no business landing
+    in a file on disk). Dropping it here matches that existing convention
+    instead of inventing a new one.
+
+    :param sandbox: Resolved sandbox spec to serialize.
+    :returns: JSON-safe dict with ``credential_proxy`` omitted.
+    """
+    payload = asdict(sandbox)
+    payload.pop("credential_proxy", None)
+    return payload
+
+
 def prepare_bridge_dir(
     conversation_id: str,
     *,
@@ -926,6 +951,8 @@ def prepare_bridge_dir(
         so :func:`_build_tools` can build the bridge's own
         ``sys_os_*`` tools against it instead of always running
         unsandboxed. ``None`` preserves the prior unsandboxed default.
+        Its ``credential_proxy`` is never written — see
+        :func:`_bridge_sandbox_payload`.
     :returns: Bridge directory path.
     """
     resolved_bridge_id = bridge_id or conversation_id
@@ -953,7 +980,7 @@ def prepare_bridge_dir(
     if model_env:
         payload["model_env"] = model_env
     if sandbox is not None:
-        payload["sandbox"] = asdict(sandbox)
+        payload["sandbox"] = _bridge_sandbox_payload(sandbox)
     _write_json_file(bridge_dir / _CONFIG_FILE, payload)
     # Keep ``_PERMISSION_HOOK_FILE`` — the PermissionRequest command hook
     # reads the Omnigent server URL from it at runtime, so wiping it on re-prep
@@ -4493,7 +4520,9 @@ def _build_tools(config: _JsonObject) -> tuple[dict[str, Tool], Callable[[], Non
         resolved ``os_env.sandbox`` (policy overrides included), is
         applied to the ``sys_os_*`` tools built here. Its absence
         (older bridge configs, or sessions with no sandbox to carry)
-        falls back to the prior unsandboxed default.
+        falls back to the prior unsandboxed default. ``credential_proxy``
+        is never present (see :func:`_bridge_sandbox_payload`), so the
+        rebuilt spec always has it unset here.
     :returns: ``(tools, close_tools)`` where ``close_tools``
         releases any helper processes.
     """
