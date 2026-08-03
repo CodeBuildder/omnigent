@@ -335,7 +335,6 @@ class _InitialAuthTokenFactory:
                 self._fallback_factory = _make_auth_token_factory(
                     self._server_url,
                     _allow_initial_token=False,
-                    _allow_delegated_mint=False,
                 )
                 self._fallback_resolved = True
             if self._fallback_factory is None:
