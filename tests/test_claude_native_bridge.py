@@ -22,6 +22,7 @@ import pytest
 
 from omnigent import claude_native_bridge, native_cost_popup
 from omnigent.claude_native_bridge import (
+    _build_tools,
     _claude_prompt_rendered,
     _escape_unsupported_slash_command,
     _hook_record_from_jsonl_record,
@@ -48,6 +49,7 @@ from omnigent.claude_native_bridge import (
     stop_hook_seen_since,
     write_tmux_target,
 )
+from omnigent.inner.datamodel import OSEnvSandboxSpec
 from omnigent.reasoning_effort import CLAUDE_EFFORTS
 
 
@@ -344,6 +346,70 @@ def test_prepare_bridge_dir_refuses_symlinked_ancestor(
     # Confirm the bearer token did NOT land in the attacker-controlled
     # directory — the refusal happened before any file write.
     assert not (attacker_dir / "bridge.json").exists()
+
+
+def test_prepare_bridge_dir_persists_and_applies_resolved_sandbox(
+    tmp_path: Path,
+) -> None:
+    """
+    A resolved sandbox reaches both the bridge config and its sys_os_* tools.
+
+    ``enforce_sandbox``/``force_sandbox`` resolves a real sandbox onto the
+    session's ``os_env.sandbox`` upstream (``runner/app.py``'s
+    ``_apply_sandbox_override_from_verdict``), but that decision used to
+    have no path into the claude-native bridge: ``prepare_bridge_dir``
+    never wrote it to the config file, and ``_build_tools`` unconditionally
+    hardcoded ``OSEnvSandboxSpec(type="none")`` regardless of the policy.
+    A server operator configuring ``force_sandbox`` for claude-native
+    sessions got silent unenforced host access. This locks in the fix:
+    the resolved sandbox must survive the config round-trip and actually
+    govern the tools that reach the agent.
+    """
+    resolved_sandbox = OSEnvSandboxSpec(type="darwin_seatbelt", allow_network=False)
+
+    bridge_dir = prepare_bridge_dir(
+        "conv_sandboxed",
+        workspace=tmp_path,
+        sandbox=resolved_sandbox,
+    )
+    config = json.loads((bridge_dir / "bridge.json").read_text(encoding="utf-8"))
+    assert config["sandbox"]["type"] == "darwin_seatbelt"
+    assert config["sandbox"]["allow_network"] is False
+
+    tools, close_tools = _build_tools(config)
+    try:
+        os_env = tools["sys_os_shell"]._os_env
+        assert os_env is not None
+        assert os_env.sandbox.backend_type == "darwin_seatbelt"
+        assert os_env.sandbox.active is True
+        assert os_env.sandbox.allow_network is False
+    finally:
+        close_tools()
+
+
+def test_prepare_bridge_dir_without_sandbox_builds_unsandboxed_tools(
+    tmp_path: Path,
+) -> None:
+    """
+    No resolved sandbox preserves the prior unsandboxed default.
+
+    Sessions with nothing to carry (e.g. the ``omnigent claude`` CLI's own
+    synthesized wrapper spec, which intentionally declares
+    ``os_env.sandbox.type: none``) must keep working exactly as before —
+    this is the fallback the fix above must not disturb.
+    """
+    bridge_dir = prepare_bridge_dir("conv_unsandboxed", workspace=tmp_path)
+    config = json.loads((bridge_dir / "bridge.json").read_text(encoding="utf-8"))
+    assert "sandbox" not in config
+
+    tools, close_tools = _build_tools(config)
+    try:
+        os_env = tools["sys_os_shell"]._os_env
+        assert os_env is not None
+        assert os_env.sandbox.backend_type == "none"
+        assert os_env.sandbox.active is False
+    finally:
+        close_tools()
 
 
 def test_ensure_secure_dir_succeeds_without_getuid(
