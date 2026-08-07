@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.TouchDelegate
 import android.view.View
 import android.view.ViewGroup
@@ -159,7 +160,21 @@ class MainActivity : AppCompatActivity() {
         // Wrap the WebView in a FrameLayout so the floating server-switcher
         // pill can sit on top of it. The pill uses the app's brand palette
         // (values/values-night colors.xml) so it adapts to light/dark mode.
-        val container = FrameLayout(this)
+        //
+        // A plain ViewGroup only consults its own touchDelegate as a last
+        // resort, once every child has already failed to claim the touch —
+        // and the full-bleed WebView underneath the pill claims nearly
+        // every touch itself (it tracks all of them for possible scroll/
+        // zoom), so a delegate installed the ordinary way would never run.
+        // Override dispatch to check it first instead.
+        val container =
+            object : FrameLayout(this) {
+                override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                    val delegate = touchDelegate
+                    if (delegate != null && delegate.onTouchEvent(ev)) return true
+                    return super.dispatchTouchEvent(ev)
+                }
+            }
         container.addView(webView)
         val dp = resources.displayMetrics.density
         switchButton =
