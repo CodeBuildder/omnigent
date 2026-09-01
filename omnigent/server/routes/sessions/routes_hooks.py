@@ -87,6 +87,7 @@ from omnigent.server.routes._sessions.orchestration import (
 from omnigent.server.schemas import (
     ElicitationRequestParams,
 )
+from omnigent.spec import AgentSpec
 from omnigent.spec.types import (
     Phase,
     PolicyAction,
@@ -125,6 +126,172 @@ def _create_route_decision_id(
             if isinstance(decision_id, str) and decision_id:
                 return decision_id
     return None
+
+
+# Harnesses whose LLM-phase round trip (PHASE_LLM_REQUEST / PHASE_LLM_RESPONSE via
+# this route) never also posts the assistant message back through
+# ``POST .../events``. Phase.RESPONSE is only ever evaluated from that POST (see
+# ``_evaluate_output_policy`` in ``_sessions/helpers.py``), so a RESPONSE-phase
+# policy declared on one of these harnesses is structurally unreachable, not just
+# advisory. Confirmed on ``claude-sdk`` (omnigent-ai/omnigent#5939): a complete
+# session's access log shows exactly one ``POST .../events`` — the user's own
+# message — regardless of how many assistant turns follow.
+_HARNESSES_WITHOUT_RESPONSE_PHASE_DELIVERY: frozenset[str] = frozenset({"claude-sdk"})
+
+# Session ids already warned about an unreachable RESPONSE-phase policy, so the
+# warning fires once per session rather than once per LLM round trip. Unbounded
+# but session ids are naturally bounded by process lifetime; a restart clears it.
+_warned_unreachable_response_policy_sessions: set[str] = set()
+
+
+def _unreachable_response_phase_policy_names(spec: AgentSpec) -> list[str]:
+    """
+    Names of *spec*'s guardrail policies bound to ``Phase.RESPONSE``.
+
+    Only catches policies where that's knowable statically: a declarative
+    policy's ``on:`` (explicit, or the ``[request, response]`` default when
+    omitted — see ``_parse_policy_base_fields``). Every policy the spec
+    parser accepts today is ``type: function`` (``type: prompt`` was
+    removed), and a function policy's ``on:`` is discarded at parse time
+    regardless of what the bundle author wrote — the callable self-selects
+    phases at runtime by inspecting the event it's called with. So this
+    finds nothing on any bundle constructible today; it exists so a
+    reintroduced declarative policy type (or the legacy shape, if some
+    caller still constructs one directly rather than through the parser)
+    is caught precisely instead of falling through to the general caveat
+    in :func:`_warn_if_response_phase_policy_unreachable`.
+
+    :param spec: The agent's parsed spec.
+    :returns: Policy names bound to ``Phase.RESPONSE``, in declaration
+        order. Empty if none, or if the spec has no guardrails.
+    """
+    guardrails = spec.guardrails
+    if guardrails is None or guardrails.policies is None:
+        return []
+    return [
+        policy.name
+        for policy in guardrails.policies
+        if policy.on is not None and any(selector.phase == Phase.RESPONSE for selector in policy.on)
+    ]
+
+
+def _self_selecting_policy_names(spec: AgentSpec) -> list[str]:
+    """
+    Names of *spec*'s guardrail policies with no statically-declared
+    ``on:`` — i.e. every ``type: function`` policy, which self-selects
+    which event types it handles at runtime (see
+    :func:`_unreachable_response_phase_policy_names`).
+
+    These are exactly the policies :func:`_warn_if_response_phase_policy_unreachable`
+    can't clear or convict: unlike a policy with an explicit, RESPONSE-free
+    ``on:`` (provably unaffected), a self-selecting policy might act on a
+    ``response`` event and this harness will never give it the chance to
+    find out.
+
+    :param spec: The agent's parsed spec.
+    :returns: Policy names with ``on is None``, in declaration order.
+        Empty if none, or if the spec has no guardrails.
+    """
+    guardrails = spec.guardrails
+    if guardrails is None or guardrails.policies is None:
+        return []
+    return [policy.name for policy in guardrails.policies if policy.on is None]
+
+
+def _warn_if_response_phase_policy_unreachable(
+    *, session_id: str, phase: Phase, spec: AgentSpec
+) -> None:
+    """
+    Log once if *spec*'s guardrails include a policy this session's
+    harness can never deliver a RESPONSE-phase event to
+    (omnigent-ai/omnigent#5939).
+
+    Called from the LLM-phase round trip (``PHASE_LLM_REQUEST`` /
+    ``PHASE_LLM_RESPONSE``) rather than refusing the session outright:
+    the gap is real and worth surfacing loudly, but a hard refusal would
+    break every existing bundle that happens to use the ``[request,
+    response]`` default on one of these harnesses, most of which also
+    declare a working ``llm_response`` or ``tool_call`` policy alongside
+    it. A once-per-session warning is the minimum bar the issue asks for
+    ("Silently advisory is the worst of the three").
+
+    Three-way split, because which policies are actually affected is only
+    sometimes knowable ahead of time:
+
+    - :func:`_unreachable_response_phase_policy_names` names policies
+      whose ``on:`` is statically known to include ``response``
+      (currently only a theoretical case — the only policy type the spec
+      parser accepts today, ``type: function``, discards ``on:`` and
+      self-selects its phase at runtime; a reintroduced declarative type
+      would light this path back up for free). When it finds names, one
+      warning line accuses them by name.
+    - :func:`_self_selecting_policy_names` names policies whose phase
+      isn't statically known at all — every ``type: function`` policy,
+      which is the actual case for every bundle constructible today.
+      These can't be cleared or convicted, so a second warning line
+      names them as a caveat rather than an accusation.
+    - A policy with an explicit ``on:`` that provably excludes
+      ``response`` is neither — it's cleared, and never mentioned.
+      If every policy clears, nothing is logged at all: there's nothing
+      to warn about.
+
+    :param session_id: Session/conversation identifier.
+    :param phase: The phase this evaluation call was for. Only
+        ``LLM_REQUEST`` / ``LLM_RESPONSE`` are checked — those are what
+        confirm we're on a harness's own LLM round trip, as opposed to
+        the message-POST path that (when reached) evaluates
+        ``Phase.RESPONSE`` correctly on its own.
+    :param spec: The agent's parsed spec.
+    """
+    if phase not in (Phase.LLM_REQUEST, Phase.LLM_RESPONSE):
+        return
+    if session_id in _warned_unreachable_response_policy_sessions:
+        return
+    harness = spec.executor.config.get("harness") or spec.executor.type
+    if harness not in _HARNESSES_WITHOUT_RESPONSE_PHASE_DELIVERY:
+        return
+    guardrails = spec.guardrails
+    if guardrails is None or not guardrails.policies:
+        return
+    unreachable = _unreachable_response_phase_policy_names(spec)
+    unknowable = _self_selecting_policy_names(spec)
+    if not unreachable and not unknowable:
+        # Every policy has an explicit on: that provably excludes
+        # response — nothing here could be affected either way.
+        return
+    _warned_unreachable_response_policy_sessions.add(session_id)
+    if unreachable:
+        _logger.warning(
+            "policy_response_phase_unreachable: session %s (harness=%s) declares "
+            "RESPONSE-phase polic%s %s. This harness's LLM round trip never "
+            "evaluates Phase.RESPONSE, and the separate evaluator that would "
+            "(_evaluate_output_policy) only runs when the assistant message is "
+            "posted back through POST .../events, which this harness does not do. "
+            "%s will not be enforced for this session — output the policy is meant "
+            "to gate may reach the user unchecked.",
+            session_id,
+            harness,
+            "y" if len(unreachable) == 1 else "ies",
+            unreachable,
+            "This policy" if len(unreachable) == 1 else "These policies",
+        )
+    if unknowable:
+        _logger.warning(
+            "policy_response_phase_unreachable: session %s (harness=%s) has "
+            "self-selecting polic%s %s configured, and this harness's LLM round "
+            "trip never evaluates Phase.RESPONSE — the separate evaluator that "
+            "would (_evaluate_output_policy) only runs when the assistant "
+            "message is posted back through POST .../events, which this harness "
+            "does not do. If any of %s gates on event type 'response' rather "
+            "than 'llm_response', it will never fire for this session; this "
+            "can't be confirmed from the spec alone since function-type "
+            "policies self-select their phase at runtime.",
+            session_id,
+            harness,
+            "y" if len(unknowable) == 1 else "ies",
+            unknowable,
+            "it" if len(unknowable) == 1 else "them",
+        )
 
 
 def register_hooks_routes(
@@ -811,6 +978,9 @@ def register_hooks_routes(
             )
 
         engine = _build_engine(conv)
+        _warn_if_response_phase_policy_unreachable(
+            session_id=session_id, phase=phase, spec=loaded.spec
+        )
         # Use the turn-initiating human's identity (persisted at forward time)
         # so per-user policies gate on the correct actor even when the HTTP
         # caller is the runner's service-account credential.  Falls back to
