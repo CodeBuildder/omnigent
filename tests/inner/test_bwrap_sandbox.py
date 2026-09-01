@@ -1239,7 +1239,7 @@ def test_read_write_overlap_scanned_once(tmp_path: Path) -> None:
 
 def test_write_root_missing_on_host_is_created(tmp_path: Path) -> None:
     """
-    Regression (#5938): a ``write_paths`` root that doesn't exist on the
+    Regression: a ``write_paths`` root that doesn't exist on the
     host yet must be created before the ``--bind-try`` is emitted.
 
     ``--bind-try`` silently skips a missing source, so without this the
@@ -1263,7 +1263,7 @@ def test_write_root_missing_on_host_logs_loudly(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """
-    Regression (#5938): creating a missing write_paths root must be
+    Regression: creating a missing write_paths root must be
     logged at a visible level, and the log must state the path and the
     permissions it ended up with, not create it silently.
     """
@@ -1277,7 +1277,8 @@ def test_write_root_missing_on_host_logs_loudly(
         backend.wrap_launcher_argv([sys.executable, "-c", "pass"], policy, cwd)
 
     matching = [r for r in caplog.records if str(missing_root) in r.getMessage()]
-    assert matching, f"Expected a warning naming {missing_root}, got: {[r.getMessage() for r in caplog.records]}"
+    all_messages = [r.getMessage() for r in caplog.records]
+    assert matching, f"Expected a warning naming {missing_root}, got: {all_messages}"
     message = matching[0].getMessage()
     assert "did not exist" in message
     assert re.search(r"permissions\s+0o[0-7]+", message), (
@@ -1304,6 +1305,40 @@ def test_write_root_already_present_is_not_touched(tmp_path: Path) -> None:
     assert existing_root.stat().st_mtime_ns == before_mtime
     assert "--bind-try" in argv
     assert str(existing_root) in argv
+
+
+def test_write_root_uncreatable_warns_instead_of_failing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    A missing write_paths root whose creation fails (e.g. an unwritable
+    parent) must not abort the whole sandbox wrap: merged-in optional
+    write roots (harness-internal dirs under an unwritable ``/home``)
+    would otherwise degrade the helper to running unwrapped. The wrap
+    keeps the old skip-the-bind behavior for that root and warns loudly.
+    """
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    locked_parent = tmp_path / "locked"
+    locked_parent.mkdir(mode=0o555)
+    uncreatable_root = locked_parent / "child" / "grandchild"
+    if os.geteuid() == 0:
+        pytest.skip("read-only directory modes don't bind as root")
+
+    backend = _make_backend()
+    policy = _make_policy(cwd, write_roots=[uncreatable_root])
+    try:
+        with caplog.at_level(logging.WARNING):
+            argv = backend.wrap_launcher_argv([sys.executable, "-c", "pass"], policy, cwd)
+    finally:
+        locked_parent.chmod(0o755)
+
+    assert not uncreatable_root.exists()
+    matching = [r for r in caplog.records if str(uncreatable_root) in r.getMessage()]
+    assert matching, "Expected a warning about the uncreatable write root"
+    assert "could not be created" in matching[0].getMessage()
+    # The bind is still emitted as --bind-try, which bwrap skips safely.
+    assert str(uncreatable_root) in argv
 
 
 def test_nested_grant_masked_in_non_recursive_default(tmp_path: Path) -> None:
