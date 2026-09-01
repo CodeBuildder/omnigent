@@ -497,6 +497,7 @@ class BwrapSandboxBackend(SandboxBackend):
             if not root.exists():
                 try:
                     root.mkdir(parents=True, exist_ok=True)
+                    created_mode = root.stat().st_mode & 0o777
                 except OSError as exc:
                     _LOGGER.warning(
                         "linux_bwrap: write_paths root %s does not exist on "
@@ -512,7 +513,7 @@ class BwrapSandboxBackend(SandboxBackend):
                         "granted write access takes effect instead of "
                         "silently binding to nothing",
                         root,
-                        oct(root.stat().st_mode & 0o777),
+                        oct(created_mode),
                     )
             bwrap_args += ["--bind-try", str(root), str(root)]
 

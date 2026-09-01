@@ -1308,7 +1308,9 @@ def test_write_root_already_present_is_not_touched(tmp_path: Path) -> None:
 
 
 def test_write_root_uncreatable_warns_instead_of_failing(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     A missing write_paths root whose creation fails (e.g. an unwritable
@@ -1319,26 +1321,38 @@ def test_write_root_uncreatable_warns_instead_of_failing(
     """
     cwd = tmp_path / "work"
     cwd.mkdir()
-    locked_parent = tmp_path / "locked"
-    locked_parent.mkdir(mode=0o555)
-    uncreatable_root = locked_parent / "child" / "grandchild"
-    if os.geteuid() == 0:
-        pytest.skip("read-only directory modes don't bind as root")
+    uncreatable_root = tmp_path / "locked" / "child" / "grandchild"
+
+    real_mkdir = Path.mkdir
+
+    def _mkdir(self: Path, *args: object, **kwargs: object) -> None:
+        # Simulate an unwritable parent regardless of runner privileges
+        # (mode-based enforcement doesn't hold when tests run as root).
+        if self == uncreatable_root:
+            raise PermissionError(13, "Permission denied", str(self))
+        real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", _mkdir)
 
     backend = _make_backend()
     policy = _make_policy(cwd, write_roots=[uncreatable_root])
-    try:
-        with caplog.at_level(logging.WARNING):
-            argv = backend.wrap_launcher_argv([sys.executable, "-c", "pass"], policy, cwd)
-    finally:
-        locked_parent.chmod(0o755)
+    with caplog.at_level(logging.WARNING):
+        argv = backend.wrap_launcher_argv([sys.executable, "-c", "pass"], policy, cwd)
 
     assert not uncreatable_root.exists()
     matching = [r for r in caplog.records if str(uncreatable_root) in r.getMessage()]
     assert matching, "Expected a warning about the uncreatable write root"
     assert "could not be created" in matching[0].getMessage()
-    # The bind is still emitted as --bind-try, which bwrap skips safely.
-    assert str(uncreatable_root) in argv
+    # The full bind triple is still emitted; bwrap's --bind-try skips
+    # the missing source safely instead of failing the spawn.
+    triples = [
+        (argv[i], argv[i + 1], argv[i + 2])
+        for i, a in enumerate(argv)
+        if a == "--bind-try" and i + 2 < len(argv)
+    ]
+    assert ("--bind-try", str(uncreatable_root), str(uncreatable_root)) in triples, (
+        f"expected a --bind-try triple for {uncreatable_root}, got {triples}"
+    )
 
 
 def test_nested_grant_masked_in_non_recursive_default(tmp_path: Path) -> None:
