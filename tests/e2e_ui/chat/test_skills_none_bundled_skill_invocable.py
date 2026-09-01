@@ -229,9 +229,9 @@ def test_skills_none_allows_invoking_bundled_skill(
 
             # Turn settles: the scripted final text lands and the working
             # indicator clears.
-            expect(
-                page.locator(_ASSISTANT).filter(has_text=_DONE_TEXT).first
-            ).to_be_visible(timeout=240_000)
+            expect(page.locator(_ASSISTANT).filter(has_text=_DONE_TEXT).first).to_be_visible(
+                timeout=240_000
+            )
             expect(page.locator(_WORKING)).to_have_count(0, timeout=60_000)
 
             # ── The reproduction assertion ──────────────────────────────
