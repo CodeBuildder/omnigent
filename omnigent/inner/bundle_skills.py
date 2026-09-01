@@ -116,6 +116,35 @@ def bundle_skill_names(bundle_dir: Path) -> list[str]:
     return names
 
 
+def bundle_plugin_name(bundle_dir: Path, agent_name: str | None) -> str:
+    """
+    Resolve the plugin name Claude Code will label this bundle's skills
+    with (the ``<plugin>`` half of ``<plugin>:<skill>``).
+
+    Prefers the ``name`` recorded in the bundle's own
+    ``.claude-plugin/plugin.json`` — a user-supplied manifest may carry a
+    name that differs from the agent's display name, and the CLI labels
+    skills by the manifest, not the agent. Falls back to the same
+    ``agent_name or bundle_dir.name`` default that
+    :func:`ensure_bundle_plugin_manifest` writes, so both agree when the
+    manifest was auto-generated (or is unreadable).
+
+    :param bundle_dir: Materialized agent-bundle root.
+    :param agent_name: Agent display name, or ``None``.
+    :returns: The plugin name to build ``<plugin>:<skill>`` entries with.
+    """
+    manifest_path = bundle_dir / ".claude-plugin" / "plugin.json"
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        manifest = None
+    if isinstance(manifest, dict):
+        name = manifest.get("name")
+        if isinstance(name, str) and name:
+            return name
+    return agent_name or bundle_dir.name
+
+
 def claude_native_skill_args(
     bundle_dir: Path | None,
     *,

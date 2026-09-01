@@ -1899,6 +1899,31 @@ class TestSeedBundleSkillsWhenHermetic(unittest.TestCase):
         # only the skills allowlist changes.
         self.assertEqual(resolved.setting_sources, [])
 
+    def test_manifest_name_wins_over_agent_name(self) -> None:
+        """A bundle's own ``.claude-plugin/plugin.json`` name qualifies the
+        seeded ``plugin:skill`` entries — the CLI labels plugin skills by
+        the manifest, not the agent display name."""
+        import json as _json
+        import tempfile
+
+        from omnigent.inner.claude_sdk_executor import (
+            _ResolvedSkills,
+            _seed_bundle_skills_when_hermetic,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle_dir = self._bundle(tmp, {"my-skill-dir": "my-skill"})
+            manifest_dir = bundle_dir / ".claude-plugin"
+            manifest_dir.mkdir()
+            (manifest_dir / "plugin.json").write_text(_json.dumps({"name": "custom-plugin"}))
+            resolved = _seed_bundle_skills_when_hermetic(
+                _ResolvedSkills(skills=[], setting_sources=[]),
+                skills_filter="none",
+                bundle_dir=bundle_dir,
+                agent_name="testagent",
+            )
+        self.assertEqual(resolved.skills, ["my-skill", "custom-plugin:my-skill"])
+
     def test_agent_name_none_falls_back_to_bundle_dir_basename(self) -> None:
         """Matches ``ensure_bundle_plugin_manifest``'s own fallback for the qualified name."""
         import tempfile

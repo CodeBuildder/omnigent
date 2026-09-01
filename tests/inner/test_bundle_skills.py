@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from omnigent.inner.bundle_skills import (
+    bundle_plugin_name,
     bundle_skill_names,
     claude_native_skill_args,
     ensure_bundle_plugin_manifest,
@@ -204,3 +205,38 @@ def test_bundle_skill_names_partial_failure_keeps_valid_ones(tmp_path: Path) -> 
     broken_dir.mkdir(parents=True)
     (broken_dir / "SKILL.md").write_text("no frontmatter here\n")
     assert bundle_skill_names(tmp_path) == ["good-skill"]
+
+
+def test_bundle_plugin_name_prefers_manifest_name(tmp_path: Path) -> None:
+    """
+    A user-authored manifest whose ``name`` differs from the agent's
+    display name wins: the CLI labels plugin skills by the manifest, so
+    the ``<plugin>:<skill>`` allowlist entries must use that name or the
+    qualified form never matches.
+    """
+    manifest_dir = tmp_path / ".claude-plugin"
+    manifest_dir.mkdir()
+    (manifest_dir / "plugin.json").write_text(json.dumps({"name": "custom-plugin"}))
+    assert bundle_plugin_name(tmp_path, "display-name") == "custom-plugin"
+
+
+def test_bundle_plugin_name_falls_back_to_agent_name(tmp_path: Path) -> None:
+    """No manifest present: fall back to the agent display name."""
+    assert bundle_plugin_name(tmp_path, "display-name") == "display-name"
+
+
+def test_bundle_plugin_name_falls_back_to_basename_without_agent(tmp_path: Path) -> None:
+    """No manifest and no agent name: fall back to the bundle basename."""
+    assert bundle_plugin_name(tmp_path, None) == tmp_path.name
+
+
+def test_bundle_plugin_name_ignores_malformed_manifest(tmp_path: Path) -> None:
+    """A manifest that is not JSON (or has no usable name) is skipped."""
+    manifest_dir = tmp_path / ".claude-plugin"
+    manifest_dir.mkdir()
+    (manifest_dir / "plugin.json").write_text("{not json")
+    assert bundle_plugin_name(tmp_path, "display-name") == "display-name"
+    (manifest_dir / "plugin.json").write_text(json.dumps({"name": ""}))
+    assert bundle_plugin_name(tmp_path, "display-name") == "display-name"
+    (manifest_dir / "plugin.json").write_text(json.dumps(["not", "a", "dict"]))
+    assert bundle_plugin_name(tmp_path, None) == tmp_path.name

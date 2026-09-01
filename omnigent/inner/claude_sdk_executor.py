@@ -47,7 +47,11 @@ from omnigent._platform import resolve_cli_binary, stable_user_id
 from omnigent.cli_invocation import cli_invocation
 from omnigent.databricks_ai_gateway import is_databricks_ai_gateway_url
 from omnigent.inner import _proc
-from omnigent.inner.bundle_skills import bundle_skill_names, ensure_bundle_plugin_manifest
+from omnigent.inner.bundle_skills import (
+    bundle_plugin_name,
+    bundle_skill_names,
+    ensure_bundle_plugin_manifest,
+)
 from omnigent.inner.hook_scripts import subagent_router
 from omnigent.json_types import JsonObject as _JsonObject
 from omnigent.llms._usage_observer import notify_from_dict as _notify_usage_from_dict
@@ -1458,10 +1462,11 @@ def _seed_bundle_skills_when_hermetic(
         against ``"none"`` to scope this to the hermetic case.
     :param bundle_dir: Materialized agent-bundle root, or ``None``
         when the agent ships no bundle.
-    :param agent_name: Agent display name, used the same way
-        :func:`omnigent.inner.bundle_skills.ensure_bundle_plugin_manifest`
-        does to build the plugin-qualified name — falls back to the
-        bundle directory's basename when unset.
+    :param agent_name: Agent display name, used by
+        :func:`omnigent.inner.bundle_skills.bundle_plugin_name` as the
+        fallback when the bundle's ``.claude-plugin/plugin.json`` carries
+        no usable ``name`` — the manifest's own name wins otherwise,
+        since that is the label the CLI qualifies plugin skills with.
     :returns: *resolved* unchanged, or a new :class:`_ResolvedSkills`
         with ``skills`` seeded from the bundle's own skill names.
     """
@@ -1470,7 +1475,7 @@ def _seed_bundle_skills_when_hermetic(
     skill_names = bundle_skill_names(bundle_dir)
     if not skill_names:
         return resolved
-    plugin_name = agent_name or bundle_dir.name
+    plugin_name = bundle_plugin_name(bundle_dir, agent_name)
     seeded: list[str] = []
     for name in skill_names:
         seeded.append(name)
