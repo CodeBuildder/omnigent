@@ -240,3 +240,16 @@ def test_bundle_plugin_name_ignores_malformed_manifest(tmp_path: Path) -> None:
     assert bundle_plugin_name(tmp_path, "display-name") == "display-name"
     (manifest_dir / "plugin.json").write_text(json.dumps(["not", "a", "dict"]))
     assert bundle_plugin_name(tmp_path, None) == tmp_path.name
+
+
+def test_frontmatter_regex_matches_spec_parser() -> None:
+    """
+    The tolerant reader's frontmatter regex is a deliberate copy of the
+    spec parser's; if the parser's grammar ever changes, this copy must
+    follow or the two would disagree on which SKILL.md files parse.
+    """
+    from omnigent.inner import bundle_skills
+    from omnigent.spec import parser
+
+    assert bundle_skills._FRONTMATTER_RE.pattern == parser._FRONTMATTER_RE.pattern
+    assert bundle_skills._FRONTMATTER_RE.flags == parser._FRONTMATTER_RE.flags
