@@ -21,9 +21,9 @@ and the real claude CLI pointed at the mock Anthropic endpoint:
    not invokable, and the model carries on without it
 
 Regression guard: the final assertion (the ``Skill`` tool invocation of
-the bundled skill succeeds — no allowlist rejection) FAILS on the current
-build and passes once bundled skills are exempt from (or seeded into) the
-SDK's empty ``skills=[]`` allowlist under ``skills: none``.
+the bundled skill succeeds — no allowlist rejection) fails whenever the
+executor stops seeding bundled skills into the SDK's otherwise-empty
+``skills=[]`` allowlist under ``skills: none``.
 """
 
 from __future__ import annotations
