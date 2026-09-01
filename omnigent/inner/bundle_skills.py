@@ -15,7 +15,18 @@ to the real ``claude`` binary.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+
+import yaml
+
+# Matches ``_FRONTMATTER_RE`` in ``omnigent.spec.parser`` — kept as a
+# separate copy here (rather than importing the parser's private regex)
+# since this module intentionally stays a lightweight, best-effort reader:
+# by the time a bundle reaches a harness it already passed the parser's
+# strict validation, so a skill directory that fails this tolerant read
+# is skipped rather than treated as an error.
+_FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n(.*)", re.DOTALL)
 
 
 def ensure_bundle_plugin_manifest(
@@ -57,6 +68,52 @@ def ensure_bundle_plugin_manifest(
         )
         + "\n",
     )
+
+
+def bundle_skill_names(bundle_dir: Path) -> list[str]:
+    """
+    Read the ``name`` frontmatter field out of each of the bundle's
+    ``skills/<dir>/SKILL.md`` files.
+
+    Used to seed the SDK's ``skills`` allowlist with a bundle's own
+    skills when ``skills_filter: none`` would otherwise leave them
+    listed (via ``--plugin-dir``) but unable to actually invoke the
+    native ``Skill`` tool (omnigent-ai/omnigent#5946) — an empty
+    allowlist blocks every skill, bundled or host.
+
+    Deliberately tolerant: a bundle only reaches a harness after the
+    spec parser already validated every ``SKILL.md`` strictly, so a
+    directory that fails this lightweight re-read (missing file, bad
+    YAML, no ``name`` key) is skipped rather than raised — this is a
+    best-effort enrichment at turn time, not spec validation.
+
+    :param bundle_dir: Materialized agent-bundle root.
+    :returns: Skill names in directory-listing order, e.g.
+        ``["code-review", "feature-brainstorming"]``. Empty when the
+        bundle has no ``skills/`` directory or no readable skills.
+    """
+    skills_dir = bundle_dir / "skills"
+    if not skills_dir.is_dir():
+        return []
+    names: list[str] = []
+    for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+        try:
+            text = skill_md.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        match = _FRONTMATTER_RE.match(text)
+        if not match:
+            continue
+        try:
+            frontmatter = yaml.safe_load(match.group(1))
+        except yaml.YAMLError:
+            continue
+        if not isinstance(frontmatter, dict):
+            continue
+        name = frontmatter.get("name")
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
 
 
 def claude_native_skill_args(
