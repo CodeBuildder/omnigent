@@ -167,7 +167,10 @@ def claude_native_skill_args(
       sources), so no ``--setting-sources`` is emitted.
     - ``"none"`` → ``--setting-sources ""`` suppresses host-skill
       discovery; bundle skills loaded via ``--plugin-dir`` are
-      unaffected and remain visible.
+      unaffected and remain visible. Unlike the SDK path, no allowlist
+      seeding is needed here: the CLI has no per-name allowlist flag,
+      so nothing blocks the plugin skills (the SDK's empty ``skills``
+      list is what the executor's seeding works around).
     - ``list[str]`` → treated like ``"all"`` for host sources (the SDK
       uses ``setting_sources=None`` for the list case). The CLI has no
       per-name skill allowlist flag, so the named subset is not
