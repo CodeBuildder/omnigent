@@ -1398,8 +1398,8 @@ def _resolve_skills_option(
       remain listed — but an empty ``skills`` allowlist also
       blocks them from being *invoked*, so the caller
       (:meth:`ClaudeSDKExecutor.run_turn`) re-seeds this result's
-      ``skills`` with the bundle's own skill names before use
-      (omnigent-ai/omnigent#5946). This function's return value
+      ``skills`` with the bundle's own skill names before use.
+      This function's return value
       alone is not the final word for ``"none"``.
     - ``list[str]`` → ``skills=[names]``, ``setting_sources=None``.
       Only the named subset is in the model's listing; the SDK's
@@ -1441,7 +1441,7 @@ def _seed_bundle_skills_when_hermetic(
     allowlist, which blocks the ``Skill`` tool outright — including
     for the bundle's OWN skills, which are still listed (via
     ``--plugin-dir``, wired by the caller) but then can never actually
-    be invoked (omnigent-ai/omnigent#5946). Every other *resolved*
+    be invoked. Every other *resolved*
     value (``"all"``, or an explicit list of names) is returned
     unchanged: this only affects the specific ``skills=[]`` shape that
     ``"none"`` produces.
@@ -1586,8 +1586,7 @@ class ClaudeSDKExecutor(Executor):
                 ``"none"`` — the allowlist is seeded with the
                 bundle's own skill names so opting out of host
                 skills doesn't also disable the agent's own bundled
-                skill (omnigent-ai/omnigent#5946). Defaults to
-                ``"all"``.
+                skill. Defaults to ``"all"``.
             api_key_helper: Shell command the Claude CLI will invoke to
                 retrieve a bearer token, e.g.
                 ``"printf %s sk-ant-..."`` (set by the harness when

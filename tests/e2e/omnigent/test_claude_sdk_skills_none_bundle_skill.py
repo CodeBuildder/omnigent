@@ -1,4 +1,4 @@
-"""E2E — bundled skill invocation under ``skills: none`` (omnigent-ai/omnigent#5946).
+"""E2E — bundled skill invocation under ``skills: none``.
 
 Drives ``ClaudeSDKExecutor.run_turn()`` directly (in-process, real
 ``claude`` CLI binary) against a bundle whose spec sets ``skills:
@@ -110,7 +110,7 @@ def test_bundled_skill_is_invocable_under_skills_none(
     for key, value in mock_credentials_env.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("ANTHROPIC_BASE_URL", mock_llm_server_url)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "mock-key")
+    monkeypatch.setenv("OMNIGENT_CLAUDE_SDK_NO_SANDBOX", "1")
 
     executor = ClaudeSDKExecutor(
         bundle_dir=skill_bundle,
@@ -118,6 +118,7 @@ def test_bundled_skill_is_invocable_under_skills_none(
         skills_filter="none",
         model=model,
         permission_mode="bypassPermissions",
+        api_key_helper="printf %s mock-key",
         cwd="/tmp",
     )
 
@@ -147,6 +148,6 @@ def test_bundled_skill_is_invocable_under_skills_none(
     completion = skill_completions[0]
     assert completion.status == ToolCallStatus.SUCCESS, (
         f"bundled skill was denied by the skills allowlist under skills:none "
-        f"(the #5946 regression) — result: {completion.result!r}"
+        f"— result: {completion.result!r}"
     )
     assert "not in this session's skills allowlist" not in (completion.error or "")

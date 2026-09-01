@@ -1848,7 +1848,7 @@ class TestSkillsFilterTranslation(unittest.TestCase):
 class TestSeedBundleSkillsWhenHermetic(unittest.TestCase):
     """
     ``skills: none`` must not also disable the agent's own bundled
-    skill (omnigent-ai/omnigent#5946).
+    skill.
 
     ``_resolve_skills_option("none")`` alone produces an empty
     ``skills`` allowlist, which blocks the native ``Skill`` tool

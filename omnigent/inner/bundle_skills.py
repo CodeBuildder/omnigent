@@ -78,8 +78,8 @@ def bundle_skill_names(bundle_dir: Path) -> list[str]:
     Used to seed the SDK's ``skills`` allowlist with a bundle's own
     skills when ``skills_filter: none`` would otherwise leave them
     listed (via ``--plugin-dir``) but unable to actually invoke the
-    native ``Skill`` tool (omnigent-ai/omnigent#5946) — an empty
-    allowlist blocks every skill, bundled or host.
+    native ``Skill`` tool — an empty allowlist blocks every skill,
+    bundled or host.
 
     Deliberately tolerant: a bundle only reaches a harness after the
     spec parser already validated every ``SKILL.md`` strictly, so a
