@@ -479,9 +479,27 @@ class BwrapSandboxBackend(SandboxBackend):
 
         # Additional write roots — typically the per-helper scratch
         # tmpdir. We skip cwd here because it was bound above.
+        #
+        # ``--bind-try`` silently skips a missing source, so a write_paths
+        # root that doesn't exist yet on the host would otherwise bind to
+        # nothing and leave the grant with no effect — the agent finds out
+        # only much later, as a bare "Read-only file system" error on its
+        # first write. Since the policy layer has already approved this
+        # root as a write grant, create it up front so the bind (and the
+        # grant) actually does what it says.
         for root in policy.write_roots:
             if _is_same_path(root, cwd_resolved):
                 continue
+            if not root.exists():
+                root.mkdir(parents=True, exist_ok=True)
+                _LOGGER.warning(
+                    "linux_bwrap: write_paths root %s did not exist on the "
+                    "host, created it (permissions %s) so the granted write "
+                    "access takes effect instead of silently binding to "
+                    "nothing",
+                    root,
+                    oct(root.stat().st_mode & 0o777),
+                )
             bwrap_args += ["--bind-try", str(root), str(root)]
 
         # Per-file write grants. ``--bind-try`` with a file source
