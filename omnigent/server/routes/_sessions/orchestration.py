@@ -2866,6 +2866,7 @@ async def _run_managed_launch(
         host_store=host_store,
         host_registry=host_registry,
         tunnel_registry=tunnel_registry,
+        relaunch_host=relaunch_host,
     )
 
 
@@ -2879,6 +2880,7 @@ async def _bind_and_launch_managed_runner(
     host_store: HostStore,
     host_registry: HostRegistry | None,
     tunnel_registry: TunnelRegistry | None,
+    relaunch_host: Host | None = None,
 ) -> None:
     """
     Bind a provisioned managed host to its session and launch a runner.
@@ -2888,6 +2890,14 @@ async def _bind_and_launch_managed_runner(
     ``ConversationNotFoundError``, and the fresh sandbox is torn down
     (the delete route could not see the host binding yet). Settles
     the tracker on every path.
+
+    A launch failure after the host is online also tears the sandbox
+    down — UNLESS *relaunch_host* is set: that means ``managed.host_id``
+    is an existing, persistent host identity getting a new sandbox
+    generation, not a fresh one minted for this launch, so a failed
+    generation is left alone (same reasoning as a failed wake: the
+    identity is the user's, not this attempt's to destroy) rather than
+    torn down.
 
     :param session_id: Session/conversation identifier.
     :param managed: The provision result (host id + workspace).
@@ -2900,6 +2910,9 @@ async def _bind_and_launch_managed_runner(
     :param tunnel_registry: Runner-tunnel registry used to await the
         launched runner's connection. ``None`` in minimal test
         wirings (the rendezvous then settles at frame-send).
+    :param relaunch_host: Existing managed host row being relaunched, or
+        ``None`` for a first launch (a fresh host identity was just
+        minted for ``managed.host_id``).
     """
     from omnigent.server.managed_hosts import terminate_managed_host
 
@@ -2948,7 +2961,15 @@ async def _bind_and_launch_managed_runner(
                 # host refuses, fail the launch loudly (mirroring the
                 # delete-during-provisioning path) rather than waiting out
                 # the connect timeout for a runner that will never appear.
+                # A first launch's fresh Job that will never serve this
+                # session shouldn't outlive the launch that provisioned it;
+                # a relaunch generation on an existing host leaves the
+                # identity alone, same as a failed wake.
                 reason = launch_attempt.error or "harness not configured on the sandbox host"
+                if relaunch_host is None:
+                    host = await asyncio.to_thread(host_store.get_host, managed.host_id)
+                    if host is not None:
+                        await terminate_managed_host(host, host_store, sandbox_config)
                 tracker.fail(session_id, reason)
                 _publish_sandbox_status(session_id, "failed", reason)
                 return
@@ -2961,6 +2982,13 @@ async def _bind_and_launch_managed_runner(
             tracker,
         )
         if not connected:
+            # The runner never connected its tunnel; _wait_for_managed_runner_tunnel
+            # already settled the tracker and published the failure. Same
+            # first-launch-vs-relaunch reasoning as the branch above.
+            if relaunch_host is None:
+                host = await asyncio.to_thread(host_store.get_host, managed.host_id)
+                if host is not None:
+                    await terminate_managed_host(host, host_store, sandbox_config)
             return
     tracker.finish(session_id)
     _publish_sandbox_status(session_id, "ready")
